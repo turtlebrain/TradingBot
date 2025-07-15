@@ -7,6 +7,8 @@ import random
 
 DATA_FILE = "equities.json"
 
+key = "kTyqb6n1jikHfmw8bCMnOkNQ0xpGAyYQ0"
+
 def fetch_mock_api(symbol):
     return {
         "price" : 100
@@ -63,7 +65,8 @@ class TradingBotInterface:
         self.chat_input = tk.Entry(self.chat_frame, width = 50)
         self.chat_input.grid(row = 0, column = 0, padx = 5)
         
-        self.send_button = tk.Button(self.chat_frame, text = "Sned", command = self.send_message)
+        self.send_button = tk.Button(self.chat_frame, text = "Send", command = self.send_message)
+        self.send_button.grid(row = 0, column = 1)
         
         self.chat_output = tk.Text(root, height = 5, width = 60, state = tk.DISABLED)
         self.chat_output.pack()
@@ -95,7 +98,7 @@ class TradingBotInterface:
             "position" : 0,
             "entry_price" : entry_price,
             "levels": level_prices,
-            "status": "off"
+            "status": "Off"
         }
         self.save_equities()
         self.refresh_table()
@@ -134,9 +137,9 @@ class TradingBotInterface:
         
         response = mock_chatgpt_response(message)
         
-        self.chat_output.config(stage = tk.NORMAL)
+        self.chat_output.config(state = tk.NORMAL)
         self.chat_output.insert(tk.END, f"You: {message}\n{response}\n\n")
-        self.chat_output.config(state=tk.DISABLED)
+        self.chat_output.config(state = tk.DISABLED)
         self.chat_input.delete(0, tk.END)
         
     def refresh_table(self):
