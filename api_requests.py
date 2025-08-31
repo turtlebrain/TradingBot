@@ -56,21 +56,22 @@ def get_candlestick_data(access_token, api_server, symbol_id, start_date, end_da
     start = eastern.localize(datetime.combine(start_date, datetime.min.time())).isoformat()
     end = eastern.localize(datetime.combine(end_date,datetime.min.time())).isoformat()
     url = f"{api_server}v1/markets/candles/{symbol_id}?startTime={start}&endTime={end}&interval=OneDay"
-    headers = {
-        'Authorization': f'Bearer {access_token}'
-    }
+    headers = get_headers(access_token)
     response = requests.get(url, headers=headers)
     response.raise_for_status() 
     return response.json()['candles']
     
 def get_stock_data(access_token, api_server, symbol_str):
     url = f"{api_server}/v1/symbols/search"
-    headers = {
-        'Authorization': f'Bearer {access_token}'
-    }
+    headers = get_headers(access_token)
     params = {
         'prefix': symbol_str
     }
     response = requests.get(url, headers=headers, params=params)
     response.raise_for_status() 
     return response.json()['symbols']
+
+def get_headers(access_token):
+    return {
+        'Authorization': f'Bearer {access_token}'
+    }

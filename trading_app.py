@@ -1,8 +1,7 @@
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, messagebox
-from api_requests import build_auth_url, exchange_code_for_tokens, REDIRECT_URI
-from api_requests import get_stock_data, get_candlestick_data
+import api_requests as qt_api
 import json
 from tkcalendar import DateEntry
 
@@ -48,12 +47,12 @@ class LoginFrame(tk.Frame):
         self.pack_propagate(False)
     
     def login(self):
-        auth_url = build_auth_url()
+        auth_url = qt_api.build_auth_url()
         try:
             webbrowser.open(auth_url)
         except:
             pass
-        messagebox.showinfo("Login", f"After logging in, you'll be redirected to: {REDIRECT_URI}?code=YOUR_CODE_HERE")
+        messagebox.showinfo("Login", f"After logging in, you'll be redirected to: {qt_api.REDIRECT_URI}?code=YOUR_CODE_HERE")
         self.controller.show_frame(AuthFrame)
         
 class AuthFrame(tk.Frame):
@@ -72,7 +71,7 @@ class AuthFrame(tk.Frame):
         if not code:
             messagebox.showwarning("Input Error", "No code provided.")
             return
-        token_data = exchange_code_for_tokens(code)
+        token_data = qt_api.exchange_code_for_tokens(code)
         messagebox.showinfo("Tokens", f"Received tokens: {json.dumps(token_data, indent=2)}")
         global access_token, api_server
         api_server = token_data.get('api_server', '')   
@@ -134,13 +133,13 @@ class StockSearchFrame(tk.Frame):
             self.chat_output.insert(tk.END, "No access token found, please log in and authenticate first.\n")
             self.chat_output.config(state=tk.DISABLED)
             return   
-        symbol_data = get_stock_data(access_token=my_access_token, api_server=my_api_server, symbol_str=stock_symbol)
+        symbol_data = qt_api.get_stock_data(access_token=my_access_token, api_server=my_api_server, symbol_str=stock_symbol)
         if not symbol_data:
             self.chat_output.insert(tk.END, f"No data found for {stock_symbol}.\n")
             self.chat_output.config(state=tk.DISABLED)
             return
         symbol_id = symbol_data[0]['symbolId']
-        candle_data = get_candlestick_data(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.start_date_input.get_date(), end_date=self.end_date_input.get_date())
+        candle_data = qt_api.get_candlestick_data(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.start_date_input.get_date(), end_date=self.end_date_input.get_date())
         self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
         self.chat_output.config(state=tk.DISABLED)
                    

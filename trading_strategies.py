@@ -4,7 +4,7 @@ import numpy as np
 class TradingStrategy:
     def __init__(self, data):
         self.data = data
-
+    
     def moving_average_crossover(self, short_window=50, long_window=200):
         """
         Implements a Simple Moving Average (SMA) Crossover trading strategy.
@@ -46,3 +46,8 @@ class TradingStrategy:
         df['Date'] = pd.to_datetime(df['start'])
         df.set_index('Date', inplace=True)
         return df
+    
+    # Map of strategy names to their corresponding methods
+    trading_strategies = {
+        "Moving Average Crossover Strategy" : moving_average_crossover
+    }
