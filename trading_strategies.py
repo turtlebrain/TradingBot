@@ -33,3 +33,16 @@ class TradingStrategy:
         signals['positions'] = signals['signal'].diff()
         
         return signals
+    
+    def convert_candlestick_to_dataframe(candlestick_data):
+        """
+        Converts the input data to a pandas DataFrame if it is not already one.
+
+        Returns:
+            pd.DataFrame: The input data as a pandas DataFrame.
+        """
+        df = pd.DataFrame(candlestick_data['candles'])
+        df['Close'] = df['close']
+        df['Date'] = pd.to_datetime(df['start'])
+        df.set_index('Date', inplace=True)
+        return df
