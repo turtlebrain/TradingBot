@@ -4,6 +4,7 @@ from tkinter import ttk, messagebox
 import api_requests as qt_api
 import json
 from tkcalendar import DateEntry
+import trading_strategies as strategies
 
 access_token = ''
 api_server = ''
@@ -23,12 +24,12 @@ class TradingBotApp:
         container.grid_columnconfigure(0, weight=1)
         
         self.frames = {}
-        for F in (LoginFrame, AuthFrame, StockSearchFrame):
+        for F in (LoginFrame, AuthFrame, TradingStrategyFrame, BackTestingResultsFrame):
             frame = F(parent=container, controller=self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(LoginFrame)    
+        self.show_frame(TradingStrategyFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -76,9 +77,9 @@ class AuthFrame(tk.Frame):
         global access_token, api_server
         api_server = token_data.get('api_server', '')   
         access_token = token_data.get('access_token', '')
-        self.controller.show_frame(StockSearchFrame)
+        self.controller.show_frame(TradingStrategyFrame)
 
-class StockSearchFrame(tk.Frame):
+class TradingStrategyFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -98,17 +99,31 @@ class StockSearchFrame(tk.Frame):
         self.end_date_input = DateEntry(self)
         self.end_date_input.grid(row=2, column=1, padx=2, pady=2)
         
+        trading_strategy = strategies.TradingStrategy
+        self.strategy_label = ttk.Label(self, text="Strategy:")
+        self.strategy_label.grid(row=3, column=0, padx=2, pady=2)
+        self.strategy_var = tk.StringVar(value="Moving Average Crossover Strategy")
+        self.strategy_menu = ttk.OptionMenu(self, self.strategy_var, "Moving Average Crossover Strategy", *trading_strategy.trading_strategies.keys())
+        self.strategy_menu.grid(row=3, column=1, padx=2, pady=2)
+        
+        self.starting_capital_label = ttk.Label(self, text="Starting Capital:")
+        self.starting_capital_label.grid(row=4, column=0, padx=2, pady=2)
+        self.starting_capital_input = ttk.Entry(self)
+        self.starting_capital_input.grid(row=4, column=1, padx=2, pady=2)
+        
         self.search_button = ttk.Button(self, text="Search", command= self.search)
-        self.search_button.grid(row=3, columnspan=2, pady=2)
+        self.search_button.grid(row=5, column=0, padx=2, pady=2)
+        self.backtest_button = ttk.Button(self, text="Run Backtest", command=self.run_backtest) 
+        self.backtest_button.grid(row=5, column=1, padx=2, pady=2)
         
         self.chat_output = tk.Text(self, state=tk.DISABLED)
-        self.chat_output.grid(row=4, columnspan=2, padx=5, pady=5)
+        self.chat_output.grid(row=6, columnspan=2, padx=5, pady=5)
         self.scrollbar = ttk.Scrollbar(self, command=self.chat_output.yview)
-        self.scrollbar.grid(row=4, column=2, sticky='nsew')
+        self.scrollbar.grid(row=6, column=2, sticky='nsew')
         self.chat_output['yscrollcommand'] = self.scrollbar.set
         
         self.clear_button = ttk.Button(self, text="Clear", command=self.clear_form)
-        self.clear_button.grid(row=5, columnspan=2, pady=2)
+        self.clear_button.grid(row=7, columnspan=2, pady=2)
     
     def clear_form(self):
         self.chat_output.config(state=tk.NORMAL) 
@@ -142,7 +157,22 @@ class StockSearchFrame(tk.Frame):
         candle_data = qt_api.get_candlestick_data(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.start_date_input.get_date(), end_date=self.end_date_input.get_date())
         self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
         self.chat_output.config(state=tk.DISABLED)
+    
+    def run_backtest(self):
+        self.controller.show_frame(BackTestingResultsFrame)
                    
+class BackTestingResultsFrame(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        self.results_label = ttk.Label(self, text="Backtesting Results will be shown here.")
+        self.results_label.pack(pady=10)
+        self.run_new_test_button = ttk.Button(self, text="Run New Test", command=self.run_new_test)
+        self.run_new_test_button.pack(pady=10)
+        
+    def run_new_test(self):
+        self.controller.show_frame(TradingStrategyFrame)
+
 if __name__ == '__main__':
     root = tk.Tk()
     app = TradingBotApp(root)
