@@ -1,7 +1,6 @@
-import sys
 import webbrowser
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import ttk, messagebox
 from api_requests import build_auth_url, exchange_code_for_tokens, REDIRECT_URI
 from api_requests import get_stock_data
 import json
@@ -44,7 +43,7 @@ class LoginFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.login_button = tk.Button(self, width=50, text="Log in", command=self.login)
+        self.login_button = ttk.Button(self, width=50, text="Log in", command=self.login)
         self.login_button.place(relx=0.5, rely=0.5, anchor="center")
         self.pack_propagate(False)
     
@@ -61,11 +60,11 @@ class AuthFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.code_label = tk.Label(self, width=10, text="Enter code:")
+        self.code_label = ttk.Label(self, width=10, text="Enter code:")
         self.code_label.place(relx=0.35, rely=0.5, anchor="center")
-        self.code_entry = tk.Entry(self, width=30)
+        self.code_entry = ttk.Entry(self, width=30)
         self.code_entry.place(relx=0.60, rely=0.5, anchor="center")
-        self.auth_button = tk.Button(self, text="Authenticate", width=50, command=self.authenticate)
+        self.auth_button = ttk.Button(self, text="Authenticate", width=50, command=self.authenticate)
         self.auth_button.place(relx=0.5, rely=0.6, anchor="center")
         
     def authenticate(self):
@@ -85,31 +84,31 @@ class MainAppFrame(tk.Frame):
         super().__init__(parent)
         self.controller = controller
         
-        self.stock_label = tk.Label(self, text="Stock Symbol:")
+        self.stock_label = ttk.Label(self, text="Stock Symbol:")
         self.stock_label.grid(row=0, column=0, padx=2, pady=2)
-        self.stock_input = tk.Entry(self)
+        self.stock_input = ttk.Entry(self)
         self.stock_input.grid(row=0, column=1, padx=2, pady=2)
         
-        self.start_date_label = tk.Label(self, text="Start Date:")
+        self.start_date_label = ttk.Label(self, text="Start Date:")
         self.start_date_label.grid(row=1, column=0, padx=2, pady=2)
         self.start_date_input = DateEntry(self)
         self.start_date_input.grid(row=1, column=1, padx=2, pady=2)
         
-        self.end_date_label = tk.Label(self, text="End Date:")
+        self.end_date_label = ttk.Label(self, text="End Date:")
         self.end_date_label.grid(row=2, column=0, padx=2, pady=2)
         self.end_date_input = DateEntry(self)
         self.end_date_input.grid(row=2, column=1, padx=2, pady=2)
         
-        self.search_button = tk.Button(self, text="Search", command= self.search)
+        self.search_button = ttk.Button(self, text="Search", command= self.search)
         self.search_button.grid(row=3, columnspan=2, pady=2)
         
         self.chat_output = tk.Text(self, state=tk.DISABLED)
         self.chat_output.grid(row=4, columnspan=2, padx=5, pady=5)
-        self.scrollbar = tk.Scrollbar(self, command=self.chat_output.yview)
+        self.scrollbar = ttk.Scrollbar(self, command=self.chat_output.yview)
         self.scrollbar.grid(row=4, column=2, sticky='nsew')
         self.chat_output['yscrollcommand'] = self.scrollbar.set
         
-        self.clear_button = tk.Button(self, text="Clear", command=self.clear_form)
+        self.clear_button = ttk.Button(self, text="Clear", command=self.clear_form)
         self.clear_button.grid(row=5, columnspan=2, pady=2)
     
     def clear_form(self):
