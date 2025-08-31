@@ -1,9 +1,6 @@
 import os
 from pathlib import Path
 import requests
-import webbrowser
-import json
-import sys
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent / ".env"

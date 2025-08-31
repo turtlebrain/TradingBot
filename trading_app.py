@@ -1,7 +1,7 @@
 import sys
 import webbrowser
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 from api_requests import build_auth_url, exchange_code_for_tokens, REDIRECT_URI
 from api_requests import get_stock_data
 import json
@@ -10,86 +10,112 @@ from tkcalendar import DateEntry
 access_token = ''
 api_server = ''
 
-class TradingBotInterface:
+class TradingBotApp:
     
     def __init__(self, root):
         self.root = root
         self.root.title("AI trading Bot")
+        self.root.geometry("600x400")
         self.system_running = False
         
-        self.form_frame = tk.Frame(root)
-        self.form_frame.pack(pady = 10)
+        # Container to hold all frames
+        container = tk.Frame(root)
+        container.pack(fill="both", expand=True)
+        container.grid_rowconfigure(0, weight=1)
+        container.grid_columnconfigure(0, weight=1)
         
-        # App Interface
-        self.login_button = tk.Button(self.form_frame, width = 50, text="Log in", command= self.login)
-        self.login_button.grid(row = 0, columnspan = 2, pady = 2)
-
-        self.code_label = tk.Label(self.form_frame, width = 10, text="Enter code:")
-        self.code_label.grid(row = 1, column = 0, padx = 2, pady = 2)
-        self.code_input = tk.Entry(self.form_frame, width = 30)
-        self.code_input.grid(row = 1, column = 1, padx = 2, pady = 2)
+        self.frames = {}
+        for F in (LoginFrame, AuthFrame, MainAppFrame):
+            frame = F(parent=container, controller=self)
+            self.frames[F] = frame
+            frame.grid(row=0, column=0, sticky="nsew")
         
-        self.auth_button = tk.Button(self.form_frame, width = 50, text="Athenticate", command= self.authenticate)
-        self.auth_button.grid(row = 2, columnspan = 2, pady = 2)
+        self.show_frame(LoginFrame)    
         
-        self.start_date_label = tk.Label(self.form_frame, width = 10, text="Start date:")   
-        self.start_date_label.grid(row = 3, column = 0, padx = 2, pady = 2)
-        self.start_date_input = DateEntry(self.form_frame, date_pattern='yyyy-mm-dd')
-        self.start_date_input.grid(row = 3, column = 1, padx = 2, pady = 2)
+    def show_frame(self, frame_calss):
+        frame = self.frames[frame_calss]
+        frame.tkraise() 
         
-        self.end_date_label = tk.Label(self.form_frame, width = 10, text="End date:")
-        self.end_date_label.grid(row = 4, column = 0, padx = 2, pady = 2)
-        self.end_date_input = DateEntry(self.form_frame, date_pattern='yyyy-mm-dd')
-        self.end_date_input.grid(row = 4, column = 1, padx = 2, pady = 2)
-        
-        self.stock_label = tk.Label(self.form_frame, width = 10, text="Stock symbol:")
-        self.stock_label.grid(row = 5, column = 0, padx = 2, pady = 2)
-        self.stock_input = tk.Entry(self.form_frame, width = 30)
-        self.stock_input.grid(row = 5, column = 1, padx = 2, pady = 2)
-        
-        self.stock_search_label = tk.Label(self.form_frame, width = 10, text="Candlestick:")
-        self.stock_search_label.grid(row = 6, column = 0, padx = 2, pady = 2)
-        self.stock_search_button = tk.Button(self.form_frame, width = 30, text="Search", command= self.search)
-        self.stock_search_button.grid(row = 6, column = 1, padx = 2, pady = 2)
-         
-        self.chat_output = tk.Text(root, height = 10, width = 50, state = tk.DISABLED)
-        self.chat_output.pack(pady = 10)
-        
-        self.clear_button = tk.Button(root, text="Clear", command= self.clear_form)
-        self.clear_button.pack(pady = 5)
-                
-    def clear_form(self):
-        self.chat_output.config(state=tk.NORMAL) 
-        self.chat_output.delete(1.0, tk.END) 
-        self.chat_output.config(state=tk.DISABLED)
-        
+    def on_close(self):
+        self.running = False
+        self.root.destroy()
+            
+class LoginFrame(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        self.login_button = tk.Button(self, width=50, text="Log in", command=self.login)
+        self.login_button.place(relx=0.5, rely=0.5, anchor="center")
+        self.pack_propagate(False)
+    
     def login(self):
         auth_url = build_auth_url()
         try:
             webbrowser.open(auth_url)
         except:
             pass
-        self.chat_output.config(state=tk.NORMAL)
-        self.chat_output.insert(tk.END, f"After logging in, you'll be redirected to: {REDIRECT_URI}?code=YOUR_CODE_HERE\n")
-        self.chat_output.config(state=tk.DISABLED)
-    
+        messagebox.showinfo("Login", f"After logging in, you'll be redirected to: {REDIRECT_URI}?code=YOUR_CODE_HERE")
+        self.controller.show_frame(AuthFrame)
+        
+class AuthFrame(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        self.code_label = tk.Label(self, width=10, text="Enter code:")
+        self.code_label.place(relx=0.35, rely=0.5, anchor="center")
+        self.code_entry = tk.Entry(self, width=30)
+        self.code_entry.place(relx=0.60, rely=0.5, anchor="center")
+        self.auth_button = tk.Button(self, text="Authenticate", width=50, command=self.authenticate)
+        self.auth_button.place(relx=0.5, rely=0.6, anchor="center")
+        
     def authenticate(self):
-        code = self.code_input.get().strip()
+        code = self.code_entry.get().strip()
         if not code:
-            self.chat_output.insert(tk.END, "No code provided, exiting.")
-            sys.exit(1)
-        # Exchange code for tokens
-        self.chat_output.config(state=tk.NORMAL)
-        self.chat_output.insert(tk.END, "Exchanging code for tokens…")
+            messagebox.showwarning("Input Error", "No code provided.")
+            return
         token_data = exchange_code_for_tokens(code)
-        # Show & persist tokens
-        self.chat_output.delete(1.0, tk.END)
-        self.chat_output.insert(tk.END, "\n Success! Here’s what Questrade returned:\n")
-        self.chat_output.insert(tk.END, json.dumps(token_data, indent=2))
-        self.chat_output.config(state=tk.DISABLED)
+        messagebox.showinfo("Tokens", f"Received tokens: {json.dumps(token_data, indent=2)}")
         global access_token, api_server
         api_server = token_data.get('api_server', '')   
         access_token = token_data.get('access_token', '')
+        self.controller.show_frame(MainAppFrame)
+
+class MainAppFrame(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        
+        self.stock_label = tk.Label(self, text="Stock Symbol:")
+        self.stock_label.grid(row=0, column=0, padx=2, pady=2)
+        self.stock_input = tk.Entry(self)
+        self.stock_input.grid(row=0, column=1, padx=2, pady=2)
+        
+        self.start_date_label = tk.Label(self, text="Start Date:")
+        self.start_date_label.grid(row=1, column=0, padx=2, pady=2)
+        self.start_date_input = DateEntry(self)
+        self.start_date_input.grid(row=1, column=1, padx=2, pady=2)
+        
+        self.end_date_label = tk.Label(self, text="End Date:")
+        self.end_date_label.grid(row=2, column=0, padx=2, pady=2)
+        self.end_date_input = DateEntry(self)
+        self.end_date_input.grid(row=2, column=1, padx=2, pady=2)
+        
+        self.search_button = tk.Button(self, text="Search", command= self.search)
+        self.search_button.grid(row=3, columnspan=2, pady=2)
+        
+        self.chat_output = tk.Text(self, state=tk.DISABLED)
+        self.chat_output.grid(row=4, columnspan=2, padx=5, pady=5)
+        self.scrollbar = tk.Scrollbar(self, command=self.chat_output.yview)
+        self.scrollbar.grid(row=4, column=2, sticky='nsew')
+        self.chat_output['yscrollcommand'] = self.scrollbar.set
+        
+        self.clear_button = tk.Button(self, text="Clear", command=self.clear_form)
+        self.clear_button.grid(row=5, columnspan=2, pady=2)
+    
+    def clear_form(self):
+        self.chat_output.config(state=tk.NORMAL) 
+        self.chat_output.delete(1.0, tk.END) 
+        self.chat_output.config(state=tk.DISABLED)   
                   
     def search(self):
         self.clear_form()    
@@ -116,14 +142,10 @@ class TradingBotInterface:
             return
         self.chat_output.insert(tk.END, f"{json.dumps(symbol_data, indent=2)}")
         self.chat_output.config(state=tk.DISABLED)
-        
-    def on_close(self):
-        self.running = False
-        self.root.destroy()
-            
+                   
 if __name__ == '__main__':
     root = tk.Tk()
-    app = TradingBotInterface(root)
+    app = TradingBotApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
     root.mainloop()
         
