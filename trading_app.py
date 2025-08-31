@@ -2,7 +2,7 @@ import webbrowser
 import tkinter as tk
 from tkinter import ttk, messagebox
 from api_requests import build_auth_url, exchange_code_for_tokens, REDIRECT_URI
-from api_requests import get_stock_data
+from api_requests import get_stock_data, get_candlestick_data
 import json
 from tkcalendar import DateEntry
 
@@ -24,7 +24,7 @@ class TradingBotApp:
         container.grid_columnconfigure(0, weight=1)
         
         self.frames = {}
-        for F in (LoginFrame, AuthFrame, MainAppFrame):
+        for F in (LoginFrame, AuthFrame, StockSearchFrame):
             frame = F(parent=container, controller=self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
@@ -77,9 +77,9 @@ class AuthFrame(tk.Frame):
         global access_token, api_server
         api_server = token_data.get('api_server', '')   
         access_token = token_data.get('access_token', '')
-        self.controller.show_frame(MainAppFrame)
+        self.controller.show_frame(StockSearchFrame)
 
-class MainAppFrame(tk.Frame):
+class StockSearchFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -139,7 +139,9 @@ class MainAppFrame(tk.Frame):
             self.chat_output.insert(tk.END, f"No data found for {stock_symbol}.\n")
             self.chat_output.config(state=tk.DISABLED)
             return
-        self.chat_output.insert(tk.END, f"{json.dumps(symbol_data, indent=2)}")
+        symbol_id = symbol_data[0]['symbolId']
+        candle_data = get_candlestick_data(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.start_date_input.get_date(), end_date=self.end_date_input.get_date())
+        self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
         self.chat_output.config(state=tk.DISABLED)
                    
 if __name__ == '__main__':

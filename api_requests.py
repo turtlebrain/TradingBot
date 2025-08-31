@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 import requests
+from datetime import datetime
+import pytz
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent / ".env"
@@ -32,7 +34,6 @@ def build_auth_url():
     req = requests.Request("GET", AUTH_BASE_URL, params=params).prepare()
     return req.url
 
-
 def exchange_code_for_tokens(code: str) -> dict:
     """
     Exchanges the one-time 'code' for an access token, refresh token, etc.
@@ -47,21 +48,20 @@ def exchange_code_for_tokens(code: str) -> dict:
     resp.raise_for_status()
     return resp.json()
 
-def get_candlestick_data(symbol: str, start_date: str, end_date: str) -> dict:
+def get_candlestick_data(access_token, api_server, symbol_id, start_date, end_date): 
     """
     Fetches candlestick data for a given stock symbol between specified dates.
     """
-    # Placeholder for actual API call to fetch candlestick data
-    # This function should be implemented to interact with Questrade's API
-    return {
-        "symbol": symbol,
-        "start_date": start_date,
-        "end_date": end_date,
-        "data": [
-            {"date": "2023-01-01", "open": 100, "high": 105, "low": 95, "close": 102},
-            {"date": "2023-01-02", "open": 102, "high": 107, "low": 97, "close": 104},
-        ]
+    eastern = pytz.timezone('US/Eastern')
+    start = eastern.localize(datetime.combine(start_date, datetime.min.time())).isoformat()
+    end = eastern.localize(datetime.combine(end_date,datetime.min.time())).isoformat()
+    url = f"{api_server}v1/markets/candles/{symbol_id}?startTime={start}&endTime={end}&interval=OneDay"
+    headers = {
+        'Authorization': f'Bearer {access_token}'
     }
+    response = requests.get(url, headers=headers)
+    response.raise_for_status() 
+    return response.json()['candles']
     
 def get_stock_data(access_token, api_server, symbol_str):
     url = f"{api_server}/v1/symbols/search"
