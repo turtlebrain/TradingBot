@@ -19,7 +19,7 @@ class TradingBotApp:
     def __init__(self, root):
         self.root = root
         self.root.title("AI trading Bot")
-        self.root.geometry("600x400")
+        self.root.geometry("800x600")
         self.system_running = False
         
         # Container to hold all frames
@@ -34,7 +34,7 @@ class TradingBotApp:
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(LoginFrame)    
+        self.show_frame(BackTestingResultsFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -90,45 +90,45 @@ class TradingStrategyFrame(tk.Frame):
         self.controller = controller
         
         self.stock_label = ttk.Label(self, text="Stock Symbol:")
-        self.stock_label.grid(row=0, column=0, padx=2, pady=2)
+        self.stock_label.grid(row=0, column=1, padx=2, pady=2, sticky='nsw')
         self.stock_input = ttk.Entry(self)
-        self.stock_input.grid(row=0, column=1, padx=2, pady=2)
+        self.stock_input.grid(row=0, column=2, padx=2, pady=2, sticky='ns')
         
         self.start_date_label = ttk.Label(self, text="Start Date:")
-        self.start_date_label.grid(row=1, column=0, padx=2, pady=2)
+        self.start_date_label.grid(row=1, column=1, padx=2, pady=2, sticky='nsw')
         self.start_date_input = DateEntry(self)
-        self.start_date_input.grid(row=1, column=1, padx=2, pady=2)
+        self.start_date_input.grid(row=1, column=2, padx=2, pady=2, sticky='ns')
         
         self.end_date_label = ttk.Label(self, text="End Date:")
-        self.end_date_label.grid(row=2, column=0, padx=2, pady=2)
+        self.end_date_label.grid(row=2, column=1, padx=2, pady=2, sticky='nsw')
         self.end_date_input = DateEntry(self)
-        self.end_date_input.grid(row=2, column=1, padx=2, pady=2)
+        self.end_date_input.grid(row=2, column=2, padx=2, pady=2, sticky='ns')
         
         trading_strategy = strategies.TradingStrategy
         self.strategy_label = ttk.Label(self, text="Strategy:")
-        self.strategy_label.grid(row=3, column=0, padx=2, pady=2)
+        self.strategy_label.grid(row=3, column=1, padx=2, pady=2, sticky='nsw')
         self.strategy_var = tk.StringVar(value="Moving Average Crossover Strategy")
         self.strategy_menu = ttk.OptionMenu(self, self.strategy_var, "Moving Average Crossover Strategy", *trading_strategy.trading_strategies.keys())
-        self.strategy_menu.grid(row=3, column=1, padx=2, pady=2)
+        self.strategy_menu.grid(row=3, column=2, padx=2, pady=2, sticky='ns')
         
         self.starting_capital_label = ttk.Label(self, text="Starting Capital:")
-        self.starting_capital_label.grid(row=4, column=0, padx=2, pady=2)
+        self.starting_capital_label.grid(row=4, column=1, padx=2, pady=2, sticky='nsw')
         self.starting_capital_input = ttk.Entry(self)
-        self.starting_capital_input.grid(row=4, column=1, padx=2, pady=2)
+        self.starting_capital_input.grid(row=4, column=2, padx=2, pady=2, sticky='ns')
         
-        self.search_button = ttk.Button(self, text="Search", command= self.search)
-        self.search_button.grid(row=5, column=0, padx=2, pady=2)
-        self.backtest_button = ttk.Button(self, text="Run Backtest", command=self.run_backtest) 
-        self.backtest_button.grid(row=5, column=1, padx=2, pady=2)
+        self.search_button = ttk.Button(self, width=50, text="Search", command= self.search)
+        self.search_button.grid(row=5, column=1, padx=2, pady=2, sticky='ns')
+        self.backtest_button = ttk.Button(self, width=50, text="Run Backtest", command=self.run_backtest) 
+        self.backtest_button.grid(row=5, column=2, padx=2, pady=2, sticky='ns')
         
         self.chat_output = tk.Text(self, state=tk.DISABLED)
-        self.chat_output.grid(row=6, columnspan=2, padx=5, pady=5, stick = "nsew")
+        self.chat_output.grid(row=6, column=1, columnspan=2, padx=5, pady=5, sticky = "nsew")
         self.scrollbar = ttk.Scrollbar(self, command=self.chat_output.yview)
-        self.scrollbar.grid(row=6, column=2, sticky='nsw')
+        self.scrollbar.grid(row=6, column=3, sticky='nsw')
         self.chat_output['yscrollcommand'] = self.scrollbar.set
         
         self.clear_button = ttk.Button(self, text="Clear", command=self.clear_form)
-        self.clear_button.grid(row=7, columnspan=2, pady=2)
+        self.clear_button.grid(row=7, column=1, columnspan=2, pady=2, sticky='ns')
         
         cols, rows = self.grid_size()
         for col in range(cols):
@@ -190,14 +190,14 @@ class BackTestingResultsFrame(tk.Frame):
         super().__init__(parent)
         self.controller = controller
         self.results_label = ttk.Label(self, text="Backtesting Results:")
-        self.results_label.grid(row=0, column=0, padx=2, pady=2)
+        self.results_label.grid(row=0, column=1, padx=2, pady=2, sticky = "ns")
         self.backtest_display = tk.Text(self, state=tk.DISABLED)
-        self.backtest_display.grid(row=1, column=0, padx=5, pady=5, sticky = "nsew")
+        self.backtest_display.grid(row=1, column=1, padx=5, pady=5, sticky = "nsew")
         self.scrollbar = ttk.Scrollbar(self, command=self.backtest_display.yview)
-        self.scrollbar.grid(row=1, column=1, sticky='nsw')
+        self.scrollbar.grid(row=1, column=2, sticky='nsw')
         self.backtest_display['yscrollcommand'] = self.scrollbar.set
-        self.run_new_test_button = ttk.Button(self, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=2, column=0, padx=2, pady=2)
+        self.run_new_test_button = ttk.Button(self, width=50, text="Run New Test", command=self.run_new_test)
+        self.run_new_test_button.grid(row=2, column=1, padx=2, pady=2, sticky="ns")
         cols, rows = self.grid_size()
         for col in range(cols):
             self.grid_columnconfigure(col, weight=1)
