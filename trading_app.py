@@ -6,6 +6,8 @@ import json
 from tkcalendar import DateEntry
 import trading_strategies as strategies
 import pandas as pd
+import mplfinance as mpf
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 # Global variables to store access token and API server URL
 access_token = ''
