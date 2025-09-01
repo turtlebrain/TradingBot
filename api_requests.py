@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 # ── CONFIG ─────────────────────────────────────────────────────────────────────
@@ -50,7 +50,8 @@ def exchange_code_for_tokens(code: str) -> dict:
 
 def get_candlestick_data(access_token, api_server, symbol_id, start_date, end_date): 
     """
-    Fetches candlestick data for a given stock symbol between specified dates.
+    Fetches candlestick data for a given stock symbol between specified dates. T
+    This request is limited to a maximum of 20 datapoints per call by Questrade.
     """
     eastern = pytz.timezone('US/Eastern')
     start = eastern.localize(datetime.combine(start_date, datetime.min.time())).isoformat()
@@ -60,7 +61,48 @@ def get_candlestick_data(access_token, api_server, symbol_id, start_date, end_da
     response = requests.get(url, headers=headers)
     response.raise_for_status() 
     return response.json()['candles']
+
+def get_candles_paginated(access_token, api_server, symbol_id, start_date, end_date, interval='OneDay', max_points=20):
+    """
+    Fetches candlestick data from Questrade API in paginated chunks.
+
+    :param symbol_id: Questrade symbol ID (int)
+    :param start_date: datetime object for the start of the range
+    :param end_date: datetime object for the end of the range
+    :param access_token: Questrade API OAuth access token (string)
+    :param interval: Candle interval, default 'OneDay'
+    :param max_points: Max candles per request (Questrade default ~20)
+    :return: List of candle dictionaries
+    """
+    eastern = pytz.timezone('US/Eastern')
     
+    candles = []
+    current_start = start_date
+
+    headers = get_headers(access_token)
+
+    while current_start < end_date:
+        # Calculate chunk end date based on max_points
+        current_end = min(current_start + timedelta(days=max_points), end_date)
+
+        url = f"{api_server}/v1/markets/candles/{symbol_id}"
+        params = {
+            'startTime': eastern.localize(datetime.combine(current_start, datetime.min.time())).isoformat(),
+            'endTime': eastern.localize(datetime.combine(current_end, datetime.min.time())).isoformat(),
+            'interval': interval
+        }
+
+        resp = requests.get(url, headers=headers, params=params)
+        resp.raise_for_status()
+        data = resp.json().get('candles', [])
+
+        candles.extend(data)
+
+        # Move to the next chunk
+        current_start = current_end
+
+    return candles
+
 def get_stock_data(access_token, api_server, symbol_str):
     url = f"{api_server}/v1/symbols/search"
     headers = get_headers(access_token)

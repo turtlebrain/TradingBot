@@ -5,9 +5,14 @@ import api_requests as qt_api
 import json
 from tkcalendar import DateEntry
 import trading_strategies as strategies
+import pandas as pd
 
+# Global variables to store access token and API server URL
 access_token = ''
 api_server = ''
+
+# Global variable to store backtesting results
+result_data = pd.DataFrame()
 
 class TradingBotApp:
     
@@ -29,7 +34,7 @@ class TradingBotApp:
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(TradingStrategyFrame)    
+        self.show_frame(LoginFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -130,7 +135,7 @@ class TradingStrategyFrame(tk.Frame):
         self.chat_output.delete(1.0, tk.END) 
         self.chat_output.config(state=tk.DISABLED)   
                   
-    def search(self):
+    def search(self, show_output=True):
         self.clear_form()    
         stock_symbol = self.stock_input.get().strip()
         start_date = self.start_date_input.get_date().isoformat()
@@ -154,11 +159,26 @@ class TradingStrategyFrame(tk.Frame):
             self.chat_output.config(state=tk.DISABLED)
             return
         symbol_id = symbol_data[0]['symbolId']
-        candle_data = qt_api.get_candlestick_data(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.start_date_input.get_date(), end_date=self.end_date_input.get_date())
-        self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
-        self.chat_output.config(state=tk.DISABLED)
+        candle_data = qt_api.get_candles_paginated(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.start_date_input.get_date(), end_date=self.end_date_input.get_date())
+        if show_output:
+            self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
+            self.chat_output.config(state=tk.DISABLED)
+        return candle_data
     
     def run_backtest(self):
+        picked_strategy = self.strategy_var.get()
+        strategies_map = strategies.TradingStrategy.trading_strategies
+        global result_data
+        candle_data = self.search(show_output=False)
+        if isinstance(candle_data, list):
+            candle_data = pd.DataFrame(candle_data)
+        result_data = strategies_map[picked_strategy](candle_data)
+        if not result_data.empty:
+            backtest_frame = self.controller.frames[BackTestingResultsFrame]
+            backtest_frame.backtest_display.config(state=tk.NORMAL)
+            backtest_frame.backtest_display.delete(1.0, tk.END)
+            backtest_frame.backtest_display.insert(tk.END, f"Backtesting Results:\n{result_data[['price', 'short_mavg', 'long_mavg', 'signal', 'positions']]}\n")
+            backtest_frame.backtest_display.config(state=tk.DISABLED)
         self.controller.show_frame(BackTestingResultsFrame)
                    
 class BackTestingResultsFrame(tk.Frame):
@@ -167,8 +187,13 @@ class BackTestingResultsFrame(tk.Frame):
         self.controller = controller
         self.results_label = ttk.Label(self, text="Backtesting Results will be shown here.")
         self.results_label.pack(pady=10)
+        self.backtest_display = tk.Text(self, state=tk.DISABLED)
+        self.backtest_display.pack(padx=5, pady=5)
+        self.scrollbar = ttk.Scrollbar(self, command=self.backtest_display.yview)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.run_new_test_button = ttk.Button(self, text="Run New Test", command=self.run_new_test)
         self.run_new_test_button.pack(pady=10)
+
         
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
