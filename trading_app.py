@@ -122,13 +122,17 @@ class TradingStrategyFrame(tk.Frame):
         self.backtest_button.grid(row=5, column=1, padx=2, pady=2)
         
         self.chat_output = tk.Text(self, state=tk.DISABLED)
-        self.chat_output.grid(row=6, columnspan=2, padx=5, pady=5)
+        self.chat_output.grid(row=6, columnspan=2, padx=5, pady=5, stick = "nsew")
         self.scrollbar = ttk.Scrollbar(self, command=self.chat_output.yview)
-        self.scrollbar.grid(row=6, column=2, sticky='nsew')
+        self.scrollbar.grid(row=6, column=2, sticky='nsw')
         self.chat_output['yscrollcommand'] = self.scrollbar.set
         
         self.clear_button = ttk.Button(self, text="Clear", command=self.clear_form)
         self.clear_button.grid(row=7, columnspan=2, pady=2)
+        
+        cols, rows = self.grid_size()
+        for col in range(cols):
+            self.grid_columnconfigure(col, weight=1)
     
     def clear_form(self):
         self.chat_output.config(state=tk.NORMAL) 
@@ -185,7 +189,7 @@ class BackTestingResultsFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.results_label = ttk.Label(self, text="Backtesting Results will be shown here.")
+        self.results_label = ttk.Label(self, text="Backtesting Results:")
         self.results_label.pack(pady=10)
         self.backtest_display = tk.Text(self, state=tk.DISABLED)
         self.backtest_display.pack(padx=5, pady=5)
@@ -193,6 +197,9 @@ class BackTestingResultsFrame(tk.Frame):
         self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.run_new_test_button = ttk.Button(self, text="Run New Test", command=self.run_new_test)
         self.run_new_test_button.pack(pady=10)
+        cols, rows = self.grid_size()
+        for col in range(cols):
+            self.grid_columnconfigure(col, weight=1)
 
         
     def run_new_test(self):
