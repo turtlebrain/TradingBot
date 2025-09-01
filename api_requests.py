@@ -85,7 +85,7 @@ def get_candles_paginated(access_token, api_server, symbol_id, start_date, end_d
         # Calculate chunk end date based on max_points
         current_end = min(current_start + timedelta(days=max_points), end_date)
 
-        url = f"{api_server}/v1/markets/candles/{symbol_id}"
+        url = f"{api_server}v1/markets/candles/{symbol_id}"
         params = {
             'startTime': eastern.localize(datetime.combine(current_start, datetime.min.time())).isoformat(),
             'endTime': eastern.localize(datetime.combine(current_end, datetime.min.time())).isoformat(),
@@ -104,7 +104,7 @@ def get_candles_paginated(access_token, api_server, symbol_id, start_date, end_d
     return candles
 
 def get_stock_data(access_token, api_server, symbol_str):
-    url = f"{api_server}/v1/symbols/search"
+    url = f"{api_server}v1/symbols/search"
     headers = get_headers(access_token)
     params = {
         'prefix': symbol_str
