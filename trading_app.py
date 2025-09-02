@@ -24,7 +24,7 @@ class TradingBotApp:
         self.root.geometry("900x800")
         self.system_running = False
         
-        # Change default font for all widgets
+        # Change default font for all widgets to Poppins
         default_font = tkFont.nametofont("TkDefaultFont")
         default_font.configure(family="Poppins")
         # Container to hold all frames
@@ -39,11 +39,18 @@ class TradingBotApp:
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(TradingStrategyFrame)    
+        self.show_frame(BackTestingResultsFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
         frame.tkraise() 
+    
+    def add_outer_rows_and_cols(self, frame: tk.Frame):
+        cols, rows = frame.grid_size()
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(cols+1, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_rowconfigure(rows+1, weight=1)         
         
     def on_close(self):
         self.running = False
@@ -144,14 +151,9 @@ class TradingStrategyFrame(tk.Frame):
         self.clear_button = ttk.Button(self, text="Clear", command=self.clear_form)
         self.clear_button.grid(row=9, column=1, columnspan=2, pady=2, sticky='ns')
         
-        cols, rows = self.grid_size()    
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(cols + 1, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(rows + 1, weight=1)
+        self.controller.add_outer_rows_and_cols(self)
+
         
-          
-    
     def clear_form(self):
         self.chat_output.config(state=tk.NORMAL) 
         self.chat_output.delete(1.0, tk.END) 
@@ -236,17 +238,15 @@ class BackTestingResultsFrame(tk.Frame):
         super().__init__(parent)
         self.controller = controller
         self.results_label = ttk.Label(self, text="Backtesting Results:")
-        self.results_label.grid(row=0, column=1, padx=2, pady=2, sticky = "ns")
+        self.results_label.grid(row=1, column=1, padx=2, pady=2)
         self.backtest_display = tk.Text(self, state=tk.DISABLED)
-        self.backtest_display.grid(row=1, column=1, padx=5, pady=5, sticky = "nsew")
+        self.backtest_display.grid(row=2, column=1, padx=5, pady=5, sticky = "nsew")
         self.scrollbar = ttk.Scrollbar(self, command=self.backtest_display.yview)
-        self.scrollbar.grid(row=1, column=2, sticky='nsw')
+        self.scrollbar.grid(row=2, column=2, sticky='nsw')
         self.backtest_display['yscrollcommand'] = self.scrollbar.set
         self.run_new_test_button = ttk.Button(self, width=50, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=2, column=1, padx=2, pady=2, sticky="ns")
-        cols, rows = self.grid_size()
-        for col in range(cols):
-            self.grid_columnconfigure(col, weight=1)
+        self.run_new_test_button.grid(row=3, column=1, padx=2, pady=2, sticky="ns")
+        self.controller.add_outer_rows_and_cols(self)
         
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
