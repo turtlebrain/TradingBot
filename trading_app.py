@@ -99,6 +99,13 @@ class AuthFrame(tk.Frame):
         global access_token, api_server
         api_server = token_data.get('api_server', '')   
         access_token = token_data.get('access_token', '')
+        if api_server and access_token:
+            initial_df = self.controller.frames[TradingStrategyFrame].search(show_output=False)
+            if isinstance(initial_df, list):
+                initial_df = pd.DataFrame(initial_df)
+                chart_frame = self.controller.frames[TradingStrategyFrame].chart_frame
+                chart_frame.chart.clear()
+                chart_frame.chart.plot(data=chart_frame.convert_data_for_chart(initial_df))
         self.controller.show_frame(TradingStrategyFrame)
 
 class TradingStrategyFrame(tk.Frame):
@@ -153,7 +160,6 @@ class TradingStrategyFrame(tk.Frame):
         
         self.controller.add_outer_rows_and_cols(self)
 
-        
     def clear_form(self):
         self.chat_output.config(state=tk.NORMAL) 
         self.chat_output.delete(1.0, tk.END) 
@@ -216,12 +222,6 @@ class ChartFrame(tk.Frame):
         self.controller = controller
         self.chart = CandlestickChart(self, width=832, height=468)
         self.chart.grid(row=0, column=1, sticky="nsew")
-        global api_server, access_token
-        if api_server and access_token:
-            initial_df = controller.frames[TradingStrategyFrame].search(show_output=False)
-            if isinstance(initial_df, list):
-                initial_df = pd.DataFrame(initial_df)
-                self.chart.plot(data=self.convert_data_for_chart(initial_df))
         self.grid_columnconfigure(0, weight=1)
         
     def convert_data_for_chart(self, df):
