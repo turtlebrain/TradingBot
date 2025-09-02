@@ -84,10 +84,7 @@ class AuthFrame(tk.Frame):
         self.code_entry.grid(row=1, column=2, padx=2, pady=2, sticky="we")
         self.auth_button = ttk.Button(self, text="Authenticate", width=50, command=self.authenticate)
         self.auth_button.grid(row=2, column=1, columnspan=2, padx=2, pady=2)
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_columnconfigure(3, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.controller.add_outer_rows_and_cols(self)
         
     def authenticate(self):
         code = self.code_entry.get().strip()
