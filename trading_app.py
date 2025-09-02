@@ -6,8 +6,7 @@ import json
 from tkcalendar import DateEntry
 import trading_strategies as strategies
 import pandas as pd
-import mplfinance as mpf
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from ChartForgeTK import CandlestickChart
 
 # Global variables to store access token and API server URL
 access_token = ''
@@ -44,6 +43,7 @@ class TradingBotApp:
         
     def on_close(self):
         self.running = False
+        self.root.quit()
         self.root.destroy()
             
 class LoginFrame(tk.Frame):
@@ -94,16 +94,17 @@ class TradingStrategyFrame(tk.Frame):
         self.stock_label = ttk.Label(self, text="Stock Symbol:")
         self.stock_label.grid(row=0, column=1, padx=2, pady=2, sticky='nsw')
         self.stock_input = ttk.Entry(self)
+        self.stock_input.insert(0, "AAPL")
         self.stock_input.grid(row=0, column=2, padx=2, pady=2, sticky='ns')
         
         self.start_date_label = ttk.Label(self, text="Start Date:")
         self.start_date_label.grid(row=1, column=1, padx=2, pady=2, sticky='nsw')
-        self.start_date_input = DateEntry(self)
+        self.start_date_input = DateEntry(self, year=2025, month=8, day=1)
         self.start_date_input.grid(row=1, column=2, padx=2, pady=2, sticky='ns')
         
         self.end_date_label = ttk.Label(self, text="End Date:")
         self.end_date_label.grid(row=2, column=1, padx=2, pady=2, sticky='nsw')
-        self.end_date_input = DateEntry(self)
+        self.end_date_input = DateEntry(self, year=2025, month=8, day=31)
         self.end_date_input.grid(row=2, column=2, padx=2, pady=2, sticky='ns')
         
         trading_strategy = strategies.TradingStrategy
@@ -123,18 +124,21 @@ class TradingStrategyFrame(tk.Frame):
         self.backtest_button = ttk.Button(self, width=50, text="Run Backtest", command=self.run_backtest) 
         self.backtest_button.grid(row=5, column=2, padx=2, pady=2, sticky='ns')
         
-        self.chat_output = tk.Text(self, state=tk.DISABLED)
-        self.chat_output.grid(row=6, column=1, columnspan=2, padx=5, pady=5, sticky = "nsew")
+        # Chart and chat output area   
+        self.chart_frame = ChartFrame(self, controller)
+        self.chart_frame.grid(row=6, column=1, columnspan=2, padx=5, pady=5)
+        self.chat_output = tk.Text(self, height = 5, state=tk.DISABLED)
+        self.chat_output.grid(row=7, column=1, columnspan=2, padx=5, pady=5, sticky = "nsew")
         self.scrollbar = ttk.Scrollbar(self, command=self.chat_output.yview)
-        self.scrollbar.grid(row=6, column=3, sticky='nsw')
+        self.scrollbar.grid(row=7, column=3, sticky='nsw')
         self.chat_output['yscrollcommand'] = self.scrollbar.set
         
         self.clear_button = ttk.Button(self, text="Clear", command=self.clear_form)
-        self.clear_button.grid(row=7, column=1, columnspan=2, pady=2, sticky='ns')
+        self.clear_button.grid(row=8, column=1, columnspan=2, pady=2, sticky='ns')
         
         cols, rows = self.grid_size()
         for col in range(cols):
-            self.grid_columnconfigure(col, weight=1)
+            self.grid_columnconfigure(col, weight=1)        
     
     def clear_form(self):
         self.chat_output.config(state=tk.NORMAL) 
@@ -166,9 +170,14 @@ class TradingStrategyFrame(tk.Frame):
             return
         symbol_id = symbol_data[0]['symbolId']
         candle_data = qt_api.get_candles_paginated(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.start_date_input.get_date(), end_date=self.end_date_input.get_date())
+        candle_data_pd = pd.DataFrame(candle_data)
         if show_output:
             self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
             self.chat_output.config(state=tk.DISABLED)
+            # Plot candlestick chart
+            chart_frame = self.chart_frame
+            chart_frame.chart.clear()
+            chart_frame.chart.plot(chart_frame.convert_data_for_chart(candle_data_pd))       
         return candle_data
     
     def run_backtest(self):
@@ -186,7 +195,30 @@ class TradingStrategyFrame(tk.Frame):
             backtest_frame.backtest_display.insert(tk.END, f"Backtesting Results:\n{result_data[['price', 'short_mavg', 'long_mavg', 'signal', 'positions']]}\n")
             backtest_frame.backtest_display.config(state=tk.DISABLED)
         self.controller.show_frame(BackTestingResultsFrame)
-                   
+   
+class ChartFrame(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        self.chart = CandlestickChart(self, width=600, height=300)
+        self.chart.grid(row=0, column=1, sticky="nsew")
+        global api_server, access_token
+        if api_server and access_token:
+            initial_df = controller.frames[TradingStrategyFrame].search(show_output=False)
+            if isinstance(initial_df, list):
+                initial_df = pd.DataFrame(initial_df)
+                self.chart.plot(data=self.convert_data_for_chart(initial_df))
+        self.grid_columnconfigure(0, weight=1)
+        
+    def convert_data_for_chart(self, df):
+        # Ensure index is reset so we can enumerate
+        df = df.reset_index(drop=True)
+        # Create list of tuples: (index, open, high, low, close)
+        return [
+            (i, float(row['open']), float(row['high']), float(row['low']), float(row['close']))
+            for i, row in df.iterrows()
+        ]
+                           
 class BackTestingResultsFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
