@@ -7,6 +7,7 @@ from tkcalendar import DateEntry
 import trading_strategies as strategies
 import pandas as pd
 from ChartForgeTK import CandlestickChart
+import tkinter.font as tkFont
 
 # Global variables to store access token and API server URL
 access_token = ''
@@ -20,9 +21,12 @@ class TradingBotApp:
     def __init__(self, root):
         self.root = root
         self.root.title("AI trading Bot")
-        self.root.geometry("800x600")
+        self.root.geometry("900x800")
         self.system_running = False
         
+        # Change default font for all widgets to Poppins
+        default_font = tkFont.nametofont("TkDefaultFont")
+        default_font.configure(family="Poppins")
         # Container to hold all frames
         container = tk.Frame(root)
         container.pack(fill="both", expand=True)
@@ -40,6 +44,13 @@ class TradingBotApp:
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
         frame.tkraise() 
+    
+    def add_outer_rows_and_cols(self, frame: tk.Frame):
+        cols, rows = frame.grid_size()
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_columnconfigure(cols+1, weight=1)
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_rowconfigure(rows+1, weight=1)         
         
     def on_close(self):
         self.running = False
@@ -68,11 +79,12 @@ class AuthFrame(tk.Frame):
         super().__init__(parent)
         self.controller = controller
         self.code_label = ttk.Label(self, width=10, text="Enter code:")
-        self.code_label.place(relx=0.35, rely=0.5, anchor="center")
+        self.code_label.grid(row=1, column=1, padx=2, pady=2, sticky="we")
         self.code_entry = ttk.Entry(self, width=30)
-        self.code_entry.place(relx=0.60, rely=0.5, anchor="center")
+        self.code_entry.grid(row=1, column=2, padx=2, pady=2, sticky="we")
         self.auth_button = ttk.Button(self, text="Authenticate", width=50, command=self.authenticate)
-        self.auth_button.place(relx=0.5, rely=0.6, anchor="center")
+        self.auth_button.grid(row=2, column=1, columnspan=2, padx=2, pady=2)
+        self.controller.add_outer_rows_and_cols(self)
         
     def authenticate(self):
         code = self.code_entry.get().strip()
@@ -84,6 +96,13 @@ class AuthFrame(tk.Frame):
         global access_token, api_server
         api_server = token_data.get('api_server', '')   
         access_token = token_data.get('access_token', '')
+        if api_server and access_token:
+            initial_df = self.controller.frames[TradingStrategyFrame].search(show_output=False)
+            if isinstance(initial_df, list):
+                initial_df = pd.DataFrame(initial_df)
+                chart_frame = self.controller.frames[TradingStrategyFrame].chart_frame
+                chart_frame.chart.clear()
+                chart_frame.chart.plot(data=chart_frame.convert_data_for_chart(initial_df))
         self.controller.show_frame(TradingStrategyFrame)
 
 class TradingStrategyFrame(tk.Frame):
@@ -92,54 +111,52 @@ class TradingStrategyFrame(tk.Frame):
         self.controller = controller
         
         self.stock_label = ttk.Label(self, text="Stock Symbol:")
-        self.stock_label.grid(row=0, column=1, padx=2, pady=2, sticky='nsw')
+        self.stock_label.grid(row=1, column=1, padx=2, pady=2, sticky='we')
         self.stock_input = ttk.Entry(self)
         self.stock_input.insert(0, "AAPL")
-        self.stock_input.grid(row=0, column=2, padx=2, pady=2, sticky='ns')
+        self.stock_input.grid(row=1, column=2, padx=2, pady=2, sticky='we')
         
         self.start_date_label = ttk.Label(self, text="Start Date:")
-        self.start_date_label.grid(row=1, column=1, padx=2, pady=2, sticky='nsw')
+        self.start_date_label.grid(row=2, column=1, padx=2, pady=2, sticky='we')
         self.start_date_input = DateEntry(self, year=2025, month=8, day=1)
-        self.start_date_input.grid(row=1, column=2, padx=2, pady=2, sticky='ns')
+        self.start_date_input.grid(row=2, column=2, padx=2, pady=2, sticky='we')
         
         self.end_date_label = ttk.Label(self, text="End Date:")
-        self.end_date_label.grid(row=2, column=1, padx=2, pady=2, sticky='nsw')
+        self.end_date_label.grid(row=3, column=1, padx=2, pady=2, sticky='we')
         self.end_date_input = DateEntry(self, year=2025, month=8, day=31)
-        self.end_date_input.grid(row=2, column=2, padx=2, pady=2, sticky='ns')
+        self.end_date_input.grid(row=3, column=2, padx=2, pady=2, sticky='we')
         
         trading_strategy = strategies.TradingStrategy
         self.strategy_label = ttk.Label(self, text="Strategy:")
-        self.strategy_label.grid(row=3, column=1, padx=2, pady=2, sticky='nsw')
+        self.strategy_label.grid(row=4, column=1, padx=2, pady=2, sticky='we')
         self.strategy_var = tk.StringVar(value="Moving Average Crossover Strategy")
         self.strategy_menu = ttk.OptionMenu(self, self.strategy_var, "Moving Average Crossover Strategy", *trading_strategy.trading_strategies.keys())
-        self.strategy_menu.grid(row=3, column=2, padx=2, pady=2, sticky='ns')
+        self.strategy_menu.grid(row=4, column=2, padx=2, pady=2, sticky='we')
         
         self.starting_capital_label = ttk.Label(self, text="Starting Capital:")
-        self.starting_capital_label.grid(row=4, column=1, padx=2, pady=2, sticky='nsw')
+        self.starting_capital_label.grid(row=5, column=1, padx=2, pady=2, sticky='we')
         self.starting_capital_input = ttk.Entry(self)
-        self.starting_capital_input.grid(row=4, column=2, padx=2, pady=2, sticky='ns')
+        self.starting_capital_input.grid(row=5, column=2, padx=2, pady=2, sticky='we')
         
         self.search_button = ttk.Button(self, width=50, text="Search", command= self.search)
-        self.search_button.grid(row=5, column=1, padx=2, pady=2, sticky='ns')
+        self.search_button.grid(row=6, column=1, padx=2, pady=2, sticky='ns')
         self.backtest_button = ttk.Button(self, width=50, text="Run Backtest", command=self.run_backtest) 
-        self.backtest_button.grid(row=5, column=2, padx=2, pady=2, sticky='ns')
+        self.backtest_button.grid(row=6, column=2, padx=2, pady=2, sticky='ns')
         
         # Chart and chat output area   
         self.chart_frame = ChartFrame(self, controller)
-        self.chart_frame.grid(row=6, column=1, columnspan=2, padx=5, pady=5)
+        self.chart_frame.grid(row=7, column=1, columnspan=2, padx=5, pady=5, sticky = "we")
         self.chat_output = tk.Text(self, height = 5, state=tk.DISABLED)
-        self.chat_output.grid(row=7, column=1, columnspan=2, padx=5, pady=5, sticky = "nsew")
+        self.chat_output.grid(row=8, column=1, columnspan=2, padx=5, pady=5, sticky = "nsew")
         self.scrollbar = ttk.Scrollbar(self, command=self.chat_output.yview)
-        self.scrollbar.grid(row=7, column=3, sticky='nsw')
+        self.scrollbar.grid(row=8, column=3, sticky='nsw')
         self.chat_output['yscrollcommand'] = self.scrollbar.set
         
         self.clear_button = ttk.Button(self, text="Clear", command=self.clear_form)
-        self.clear_button.grid(row=8, column=1, columnspan=2, pady=2, sticky='ns')
+        self.clear_button.grid(row=9, column=1, columnspan=2, pady=2, sticky='ns')
         
-        cols, rows = self.grid_size()
-        for col in range(cols):
-            self.grid_columnconfigure(col, weight=1)        
-    
+        self.controller.add_outer_rows_and_cols(self)
+
     def clear_form(self):
         self.chat_output.config(state=tk.NORMAL) 
         self.chat_output.delete(1.0, tk.END) 
@@ -200,14 +217,8 @@ class ChartFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.chart = CandlestickChart(self, width=600, height=300)
+        self.chart = CandlestickChart(self, width=832, height=468)
         self.chart.grid(row=0, column=1, sticky="nsew")
-        global api_server, access_token
-        if api_server and access_token:
-            initial_df = controller.frames[TradingStrategyFrame].search(show_output=False)
-            if isinstance(initial_df, list):
-                initial_df = pd.DataFrame(initial_df)
-                self.chart.plot(data=self.convert_data_for_chart(initial_df))
         self.grid_columnconfigure(0, weight=1)
         
     def convert_data_for_chart(self, df):
@@ -224,17 +235,15 @@ class BackTestingResultsFrame(tk.Frame):
         super().__init__(parent)
         self.controller = controller
         self.results_label = ttk.Label(self, text="Backtesting Results:")
-        self.results_label.grid(row=0, column=1, padx=2, pady=2, sticky = "ns")
+        self.results_label.grid(row=1, column=1, padx=2, pady=2)
         self.backtest_display = tk.Text(self, state=tk.DISABLED)
-        self.backtest_display.grid(row=1, column=1, padx=5, pady=5, sticky = "nsew")
+        self.backtest_display.grid(row=2, column=1, padx=5, pady=5, sticky = "nsew")
         self.scrollbar = ttk.Scrollbar(self, command=self.backtest_display.yview)
-        self.scrollbar.grid(row=1, column=2, sticky='nsw')
+        self.scrollbar.grid(row=2, column=2, sticky='nsw')
         self.backtest_display['yscrollcommand'] = self.scrollbar.set
         self.run_new_test_button = ttk.Button(self, width=50, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=2, column=1, padx=2, pady=2, sticky="ns")
-        cols, rows = self.grid_size()
-        for col in range(cols):
-            self.grid_columnconfigure(col, weight=1)
+        self.run_new_test_button.grid(row=3, column=1, padx=2, pady=2, sticky="ns")
+        self.controller.add_outer_rows_and_cols(self)
         
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
