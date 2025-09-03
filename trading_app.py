@@ -13,9 +13,6 @@ import tkinter.font as tkFont
 access_token = ''
 api_server = ''
 
-# Global variable to store backtesting results
-result_data = pd.DataFrame()
-
 class TradingBotApp:
     
     def __init__(self, root):
@@ -144,7 +141,7 @@ class TradingStrategyFrame(tk.Frame):
         self.backtest_button.grid(row=6, column=2, padx=2, pady=2, sticky='ns')
         
         # Chart and chat output area   
-        self.chart_frame = ChartFrame(self, controller)
+        self.chart_frame = CandlestickChartFrame(self, controller)
         self.chart_frame.grid(row=7, column=1, columnspan=2, padx=5, pady=5, sticky = "we")
         self.chat_output = tk.Text(self, height = 5, state=tk.DISABLED)
         self.chat_output.grid(row=8, column=1, columnspan=2, padx=5, pady=5, sticky = "nsew")
@@ -200,20 +197,26 @@ class TradingStrategyFrame(tk.Frame):
     def run_backtest(self):
         picked_strategy = self.strategy_var.get()
         strategies_map = strategies.TradingStrategy.trading_strategies
-        global result_data
         candle_data = self.search(show_output=False)
         if isinstance(candle_data, list):
             candle_data = pd.DataFrame(candle_data)
-        result_data = strategies_map[picked_strategy](candle_data)
-        if not result_data.empty:
+        # Build state for position sizer    
+        staring_capital = self.starting_capital_input.get().strip()
+        if not staring_capital.isdigit():
+            self.chat_output.config(state=tk.NORMAL)
+            self.chat_output.delete(1.0, tk.END)
+            self.chat_output.insert(tk.END, "Please enter a valid starting capital (number only).\n")
+            self.chat_output.config(state=tk.DISABLED)
+        signal_data = strategies_map[picked_strategy](candle_data)
+        if not signal_data.empty:
             backtest_frame = self.controller.frames[BackTestingResultsFrame]
             backtest_frame.backtest_display.config(state=tk.NORMAL)
             backtest_frame.backtest_display.delete(1.0, tk.END)
-            backtest_frame.backtest_display.insert(tk.END, f"Backtesting Results:\n{result_data[['price', 'short_mavg', 'long_mavg', 'signal', 'positions']]}\n")
+            backtest_frame.backtest_display.insert(tk.END, f"Backtesting Results:\n{signal_data[['price', 'short_mavg', 'long_mavg', 'signal', 'positions']]}\n")
             backtest_frame.backtest_display.config(state=tk.DISABLED)
         self.controller.show_frame(BackTestingResultsFrame)
    
-class ChartFrame(tk.Frame):
+class CandlestickChartFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -248,6 +251,11 @@ class BackTestingResultsFrame(tk.Frame):
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
 
+class EquityChartFrame(tk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+    
 if __name__ == '__main__':
     root = tk.Tk()
     app = TradingBotApp(root)
