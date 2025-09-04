@@ -73,9 +73,6 @@ def backtest_strategy(
         }
         # Get order size from position sizer
         order = position_sizer(state)
-        # Execution rules
-        if not allow_short:
-            order = -min(shares, abs(order))  # No short selling allowed
         # Round to lot size
         if lot_size > 1 and order != 0:
             if order > 0:
