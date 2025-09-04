@@ -39,7 +39,7 @@ class TradingBotApp:
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(LoginFrame)    
+        self.show_frame(TradingStrategyFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -129,8 +129,8 @@ class TradingStrategyFrame(tk.Frame):
         trading_strategy = strategies.TradingStrategy
         self.strategy_label = ttk.Label(self, text="Strategy:")
         self.strategy_label.grid(row=4, column=1, padx=2, pady=2, sticky='we')
-        self.strategy_var = tk.StringVar(value="Moving Average Crossover Strategy")
-        self.strategy_menu = ttk.OptionMenu(self, self.strategy_var, "Moving Average Crossover Strategy", *trading_strategy.trading_strategies.keys())
+        self.strategy_var = tk.StringVar(value="Simple Moving Average Crossover")
+        self.strategy_menu = ttk.OptionMenu(self, self.strategy_var, "Simple Moving Average Crossover", *trading_strategy.trading_strategies.keys())
         self.strategy_menu.grid(row=4, column=2, padx=2, pady=2, sticky='we')
         
         self.starting_capital_label = ttk.Label(self, text="Starting Capital:")

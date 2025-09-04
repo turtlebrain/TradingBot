@@ -5,7 +5,7 @@ class TradingStrategy:
     def __init__(self, data):
         self.data = data
     
-    def moving_average_crossover(data, short_window=50, long_window=200):
+    def simple_moving_average_crossover(data, short_window=50, long_window=200):
         """
         Implements a Simple Moving Average (SMA) Crossover trading strategy.
 
@@ -35,8 +35,19 @@ class TradingStrategy:
         signals['positions'] = signals['signal'].diff().fillna(0)
         
         return signals
+    
+    def double_moving_average_crossover(data):
+        # TO-DO
+        return 0
+    
+    def exponential_moving_average_breakout(data):
+        # TO-DO
+        return 0
+    
         
     # Map of strategy names to their corresponding methods
     trading_strategies = {
-        "Moving Average Crossover Strategy" : moving_average_crossover
+        "Simple Moving Average Crossover" : simple_moving_average_crossover,
+        "Double Moving Average Crossover" : double_moving_average_crossover,
+        "Exponential Moving Average Breakout" : exponential_moving_average_breakout,
     }
