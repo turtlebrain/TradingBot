@@ -36,8 +36,17 @@ def all_in_sizer(state) ->int:
     
     if signal > 0:
         return max(0, max_buyable)
-    if signal < 0 and allow_short and shares > 0:
-        return -shares
+    if signal < 0: 
+        if allow_short:
+            # Max-short such that short notional  is approx equity (no leverage)
+            equity = state["equity"]
+            sell_exc_price = price * (1 - slippage)
+            target_short = int((equity // sell_exc_price))
+            if lot_size > 1:
+                target_short -= (target_short % lot_size)
+            return -abs(target_short)
+        else:
+            return -abs(shares)
     return 0
     
     

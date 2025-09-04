@@ -7,7 +7,10 @@ from tkcalendar import DateEntry
 import trading_strategies as strategies
 import pandas as pd
 from ChartForgeTK import CandlestickChart
+from ChartForgeTK import LineChart
 import tkinter.font as tkFont
+import position_sizing as pos_sz
+import backtest_engine as engine
 
 # Global variables to store access token and API server URL
 access_token = ''
@@ -98,8 +101,8 @@ class AuthFrame(tk.Frame):
             if isinstance(initial_df, list):
                 initial_df = pd.DataFrame(initial_df)
                 chart_frame = self.controller.frames[TradingStrategyFrame].chart_frame
-                chart_frame.chart.clear()
-                chart_frame.chart.plot(data=chart_frame.convert_data_for_chart(initial_df))
+                chart_frame.candle_chart.clear()
+                chart_frame.candle_chart.plot(data=chart_frame.convert_data_for_chart(initial_df))
         self.controller.show_frame(TradingStrategyFrame)
 
 class TradingStrategyFrame(tk.Frame):
@@ -133,6 +136,7 @@ class TradingStrategyFrame(tk.Frame):
         self.starting_capital_label = ttk.Label(self, text="Starting Capital:")
         self.starting_capital_label.grid(row=5, column=1, padx=2, pady=2, sticky='we')
         self.starting_capital_input = ttk.Entry(self)
+        self.starting_capital_input.insert(0, 10000)
         self.starting_capital_input.grid(row=5, column=2, padx=2, pady=2, sticky='we')
         
         self.search_button = ttk.Button(self, width=50, text="Search", command= self.search)
@@ -190,8 +194,8 @@ class TradingStrategyFrame(tk.Frame):
             self.chat_output.config(state=tk.DISABLED)
             # Plot candlestick chart
             chart_frame = self.chart_frame
-            chart_frame.chart.clear()
-            chart_frame.chart.plot(chart_frame.convert_data_for_chart(candle_data_pd))       
+            chart_frame.candle_chart.clear()
+            chart_frame.candle_chart.plot(chart_frame.convert_data_for_chart(candle_data_pd))       
         return candle_data
     
     def run_backtest(self):
@@ -201,27 +205,38 @@ class TradingStrategyFrame(tk.Frame):
         if isinstance(candle_data, list):
             candle_data = pd.DataFrame(candle_data)
         # Build state for position sizer    
-        staring_capital = self.starting_capital_input.get().strip()
-        if not staring_capital.isdigit():
+        initial_capital = self.starting_capital_input.get().strip()
+        if not initial_capital.isdigit():
             self.chat_output.config(state=tk.NORMAL)
             self.chat_output.delete(1.0, tk.END)
             self.chat_output.insert(tk.END, "Please enter a valid starting capital (number only).\n")
             self.chat_output.config(state=tk.DISABLED)
-        signal_data = strategies_map[picked_strategy](candle_data)
-        if not signal_data.empty:
+        backtest_results = engine.backtest_strategy(
+            data = candle_data, 
+            strategy_func = strategies_map[picked_strategy], 
+            position_sizer = pos_sz.all_in_sizer,
+            starting_capital = float(initial_capital),
+            allow_short = False,
+            slippage = 0.001,
+            fee_rate = 0.001,
+            fee_min = 1.0,
+            lot_size = 1
+            )
+        if not backtest_results.empty:
             backtest_frame = self.controller.frames[BackTestingResultsFrame]
-            backtest_frame.backtest_display.config(state=tk.NORMAL)
-            backtest_frame.backtest_display.delete(1.0, tk.END)
-            backtest_frame.backtest_display.insert(tk.END, f"Backtesting Results:\n{signal_data[['price', 'short_mavg', 'long_mavg', 'signal', 'positions']]}\n")
-            backtest_frame.backtest_display.config(state=tk.DISABLED)
+            backtest_frame.populate_backtest_display(backtest_results)
+            eqc_x_labels = backtest_results.index.tolist()
+            eqc_y_values = backtest_results["equity"].tolist()
+            backtest_frame.eq_curve.equity_chart.clear()
+            backtest_frame.eq_curve.equity_chart.plot(eqc_y_values, eqc_x_labels)
         self.controller.show_frame(BackTestingResultsFrame)
    
 class CandlestickChartFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.chart = CandlestickChart(self, width=832, height=468)
-        self.chart.grid(row=0, column=1, sticky="nsew")
+        self.candle_chart = CandlestickChart(self, width=832, height=468)
+        self.candle_chart.grid(row=0, column=1, sticky="nsew")
         self.grid_columnconfigure(0, weight=1)
         
     def convert_data_for_chart(self, df):
@@ -239,14 +254,38 @@ class BackTestingResultsFrame(tk.Frame):
         self.controller = controller
         self.results_label = ttk.Label(self, text="Backtesting Results:")
         self.results_label.grid(row=1, column=1, padx=2, pady=2)
-        self.backtest_display = tk.Text(self, state=tk.DISABLED)
-        self.backtest_display.grid(row=2, column=1, padx=5, pady=5, sticky = "nsew")
-        self.scrollbar = ttk.Scrollbar(self, command=self.backtest_display.yview)
-        self.scrollbar.grid(row=2, column=2, sticky='nsw')
-        self.backtest_display['yscrollcommand'] = self.scrollbar.set
+        # Equity Curve Chart
+        self.eq_curve = EquityChartFrame(self, controller)
+        self.eq_curve.grid(row=2, column=1, padx=5,pady=5, sticky="ns")
+        # Treeview
+        col_headers = ['price', 'signal', 'shares','cash','equity','market_value','order','exec_price','fees','trade_side','pnl','cum_max_equity','drawdown','returns']
+        self.backtest_display = ttk.Treeview(self, columns=col_headers, show="headings")
+        for col in col_headers:
+            self.backtest_display.heading(col, text=col)
+            self.backtest_display.column(col, width=100, anchor="center")
+        self.backtest_display.grid(row=3, column=1, padx=5, pady=5, sticky="nsew")
+
+        # Scrollbars
+        self.scroll_y = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.backtest_display.yview)
+        self.scroll_y.grid(row=3, column=2, sticky='ns')
+        self.scroll_x = ttk.Scrollbar(self, orient=tk.HORIZONTAL, command=self.backtest_display.xview)
+        self.scroll_x.grid(row=4, column=1, sticky='ew')
+
+        self.backtest_display.configure(yscrollcommand=self.scroll_y.set, xscrollcommand=self.scroll_x.set)
+
+        # Let the Treeview expand
+        self.grid_rowconfigure(3, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+
         self.run_new_test_button = ttk.Button(self, width=50, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=3, column=1, padx=2, pady=2, sticky="ns")
+        self.run_new_test_button.grid(row=5, column=1, padx=2, pady=2, sticky="ns")
         self.controller.add_outer_rows_and_cols(self)
+    
+    def populate_backtest_display(self, dataframe):
+        for row in self.backtest_display.get_children():
+            self.backtest_display.delete(row)
+        for _, row in dataframe.iterrows():
+            self.backtest_display.insert("", "end", values=list(row))
         
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
@@ -255,6 +294,10 @@ class EquityChartFrame(tk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
+        self.equity_chart = LineChart(self, width=832, height=468)
+        self.equity_chart.grid(row=0, column=1, sticky="nsew")
+        self.grid_columnconfigure(0, weight=1)
+        
     
 if __name__ == '__main__':
     root = tk.Tk()

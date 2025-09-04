@@ -8,7 +8,7 @@ def backtest_strategy(
     data :pd.DataFrame, 
     strategy_func, 
     position_sizer, 
-    starting_capital=10000, 
+    starting_capital=10000.0, 
     allow_short=False, 
     slippage=0.001, 
     fee_rate=0.001, 
@@ -75,7 +75,7 @@ def backtest_strategy(
         order = position_sizer(state)
         # Execution rules
         if not allow_short:
-            order = max(0, order)  # No short selling allowed
+            order = -min(shares, abs(order))  # No short selling allowed
         # Round to lot size
         if lot_size > 1 and order != 0:
             if order > 0:
