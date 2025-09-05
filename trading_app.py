@@ -39,7 +39,7 @@ class TradingBotApp:
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(LoginFrame)    
+        self.show_frame(TradingStrategyFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -238,9 +238,13 @@ class TradingStrategyFrame(ttk.Frame):
             backtest_frame = self.controller.frames[BackTestingResultsFrame]
             backtest_frame.populate_backtest_display(backtest_results)
             eqc_x_labels = backtest_results.index.tolist()
-            eqc_y_values = backtest_results["equity"].tolist()
+            eqc_y_values = pd.to_numeric(backtest_results["equity"], errors="coerce").dropna().tolist()
             backtest_frame.eq_curve.equity_chart.clear()
-            backtest_frame.eq_curve.equity_chart.plot(eqc_y_values, eqc_x_labels)
+            if eqc_y_values:
+                # Ensure labels are strings if provided
+                if eqc_x_labels is not None:
+                    eqc_x_labels = [str(lbl) for lbl in eqc_x_labels]
+                    backtest_frame.eq_curve.equity_chart.plot(eqc_y_values, eqc_x_labels)
         self.controller.show_frame(BackTestingResultsFrame)
    
 class CandlestickChartFrame(ttk.Frame):
@@ -392,6 +396,27 @@ class ExecutionCollasibleFrame(CollapsibleFrame):
         self.starting_capital_input = ttk.Entry(self.content)
         self.starting_capital_input.insert(0, 10000)
         self.starting_capital_input.pack(fill="x", pady=2)
+        self.slippage_label = ttk.Label(self.content, text="Slippage")
+        self.slippage_label.pack(anchor="w")
+        self.slippage_input = ttk.Entry(self.content)
+        self.slippage_input.insert(0, 0.001)
+        self.slippage_input.pack(fill="x",pady=2)
+        self.fee_rate_label = ttk.Label(self.content, text="Fee Rate")
+        self.fee_rate_label.pack(anchor="w")
+        self.fee_rate_input = ttk.Entry(self.content)
+        self.fee_rate_input.insert(0, 0.001)
+        self.fee_rate_input.pack(fill="x", pady=2)
+        self.minimum_fee_label = ttk.Label(self.content, text="Minimum Fee")
+        self.minimum_fee_label.pack(anchor="w")
+        self.minimum_fee_input = ttk.Entry(self.content)
+        self.minimum_fee_input.insert(0,1.0)
+        self.minimum_fee_input.pack(fill="x", pady=2)
+        self.lot_size_label = ttk.Label(self.content, text="Lot Size")
+        self.lot_size_label.pack(anchor="w")
+        self.lot_size_input = ttk.Entry(self.content)
+        self.lot_size_input.insert(0, 1)
+        self.lot_size_input.pack(fill="x", pady=2)
+        
         
 if __name__ == '__main__':
     root = tk.Tk()
