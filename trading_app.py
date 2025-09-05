@@ -39,7 +39,7 @@ class TradingBotApp:
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(TradingStrategyFrame)    
+        self.show_frame(LoginFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -50,6 +50,7 @@ class TradingBotApp:
         notebook.add(tab_frame, text=title)
         collapsible = frame_factory(tab_frame)
         collapsible.pack(side='left', fill='y')
+        return collapsible
     
     def add_outer_rows_and_cols(self, frame: ttk.Frame):
         cols, rows = frame.grid_size()
@@ -128,11 +129,11 @@ class TradingStrategyFrame(ttk.Frame):
 
         # Create Tabs
         self.strategy_var = tk.StringVar(value = "Simple Moving Average Crossover")
-        self.controller.create_tab(notebook, "General", 
+        self.general_tab = self.controller.create_tab(notebook, "General", 
                                    lambda parent: GeneralInfoCollapsibleFrame(parent, self.strategy_var))
-        self.controller.create_tab(notebook, "Strategy", 
+        self.strategy_tab = self.controller.create_tab(notebook, "Strategy", 
                                    lambda parent: StrategyCollapsibleFrame(parent, self.strategy_var))
-        self.controller.create_tab(notebook, "Execution", ExecutionCollasibleFrame)
+        self.execution_tab = self.controller.create_tab(notebook, "Execution", ExecutionCollasibleFrame)
 
         # --- Right-hand content area ---
         right_frame = ttk.Frame(self)
@@ -171,9 +172,9 @@ class TradingStrategyFrame(ttk.Frame):
                   
     def search(self, show_output=True):
         self.clear_form()    
-        stock_symbol = self.stock_input.get().strip()
-        start_date = self.start_date_input.get_date().isoformat()
-        end_date = self.end_date_input.get_date().isoformat()
+        stock_symbol = self.general_tab.stock_input.get().strip() 
+        start_date = self.general_tab.start_date_input.get_date().isoformat()
+        end_date = self.general_tab.end_date_input.get_date().isoformat()
         if not stock_symbol or not start_date or not end_date:
             messagebox.showwarning("Input Error", "Please enter a valid stock symbol as query.")
             return
@@ -193,7 +194,7 @@ class TradingStrategyFrame(ttk.Frame):
             self.chat_output.config(state=tk.DISABLED)
             return
         symbol_id = symbol_data[0]['symbolId']
-        candle_data = qt_api.get_candles_paginated(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.start_date_input.get_date(), end_date=self.end_date_input.get_date())
+        candle_data = qt_api.get_candles_paginated(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.general_tab.start_date_input.get_date(), end_date=self.general_tab.end_date_input.get_date())
         candle_data_pd = pd.DataFrame(candle_data)
         if show_output:
             self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
@@ -211,7 +212,11 @@ class TradingStrategyFrame(ttk.Frame):
         if isinstance(candle_data, list):
             candle_data = pd.DataFrame(candle_data)
         # Build state for position sizer    
-        initial_capital = self.starting_capital_input.get().strip()
+        initial_capital = self.execution_tab.starting_capital_input.get().strip()
+        strategy_params = { 
+            "short_window"   :   self.strategy_tab.short_entry.get().strip(),
+            "long_window"    :   self.strategy_tab.long_entry.get().strip()
+        }
         if not initial_capital.isdigit():
             self.chat_output.config(state=tk.NORMAL)
             self.chat_output.delete(1.0, tk.END)
@@ -220,6 +225,7 @@ class TradingStrategyFrame(ttk.Frame):
         backtest_results = engine.backtest_strategy(
             data = candle_data, 
             strategy_func = strategies_map[picked_strategy], 
+            strategy_param = strategy_params,
             position_sizer = pos_sz.all_in_sizer,
             starting_capital = float(initial_capital),
             allow_short = False,
@@ -241,7 +247,7 @@ class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.candle_chart = CandlestickChart(self, width=1600, height=900)
+        self.candle_chart = CandlestickChart(self, width=960, height=540)
         self.candle_chart.grid(row=0, column=1, sticky="nsew")
         self.grid_columnconfigure(0, weight=1)
         
@@ -300,7 +306,7 @@ class EquityChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.equity_chart = LineChart(self, width=1600, height=900)
+        self.equity_chart = LineChart(self, width=960, height=540)
         self.equity_chart.grid(row=0, column=1, sticky="nsew")
         self.grid_columnconfigure(0, weight=1)
 
@@ -366,9 +372,13 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         
         if selected == "Simple Moving Average Crossover":
             ttk.Label(self.content, text="Short Window:").pack(anchor="w")
-            ttk.Entry(self.content).pack(fill="x", pady=2)
+            self.short_entry = ttk.Entry(self.content)
+            self.short_entry.pack(fill="x", pady=2)
+            self.short_entry.insert(0, 20)
             ttk.Label(self.content, text="Long Window:").pack(anchor="w")
-            ttk.Entry(self.content).pack(fill="x", pady=2)
+            self.long_entry = ttk.Entry(self.content)
+            self.long_entry.pack(fill="x", pady=2)
+            self.long_entry.insert(0, 50)
 
         else:
             ttk.Label(self.content, text=f"{selected} \n is not implemented yet").pack(anchor="w")
