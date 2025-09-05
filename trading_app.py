@@ -128,7 +128,7 @@ class TradingStrategyFrame(ttk.Frame):
         notebook.grid(row=0, column=0, sticky="ns")  # fill vertically
 
         # Create Tabs
-        self.strategy_var = tk.StringVar(value = "Simple Moving Average Crossover")
+        self.strategy_var = tk.StringVar(value = "Double Moving Average Crossover")
         self.general_tab = self.controller.create_tab(notebook, "General", 
                                    lambda parent: GeneralInfoCollapsibleFrame(parent, self.strategy_var))
         self.strategy_tab = self.controller.create_tab(notebook, "Strategy", 
@@ -139,18 +139,19 @@ class TradingStrategyFrame(ttk.Frame):
         right_frame = ttk.Frame(self)
         right_frame.grid(row=0, column=1, sticky="nsew")
         right_frame.columnconfigure(0, weight=1)
+        right_frame.columnconfigure(1, weight=1)
         right_frame.rowconfigure(1, weight=1)  # chart expands
 
         # Buttons
         self.search_button = ttk.Button(right_frame, width=50, text="Search", command=self.search)
-        self.search_button.grid(row=0, column=0, padx=2, pady=2, sticky = "we")
+        self.search_button.grid(row=0, column=0, padx=2, pady=2)
 
         self.backtest_button = ttk.Button(right_frame, width=50, text="Run Backtest", command=self.run_backtest)
-        self.backtest_button.grid(row=0, column=1, padx=2, pady=2, sticky="we")
+        self.backtest_button.grid(row=0, column=1, padx=2, pady=2)
 
         # Chart
         self.chart_frame = CandlestickChartFrame(right_frame, controller)
-        self.chart_frame.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
+        self.chart_frame.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
 
         # Chat output
         self.chat_output = tk.Text(right_frame, height=5, state=tk.DISABLED)
@@ -223,12 +224,13 @@ class TradingStrategyFrame(ttk.Frame):
         strategies_map = strategies.TradingStrategy.trading_strategies
         candle_data = self.search(show_output=False)
         if isinstance(candle_data, list):
-            candle_data = pd.DataFrame(candle_data)
-        # Build state for position sizer    
+            candle_data = pd.DataFrame(candle_data)  
+            
         strategy_params = { 
             "short_window"   :   self.strategy_tab.short_entry.get().strip(),
             "long_window"    :   self.strategy_tab.long_entry.get().strip()
         }
+        
         initial_capital = self.execution_tab.starting_capital_input.get().strip()
         if not self.is_input_valid_float(initial_capital, "Starting Capital"):
             return
@@ -275,9 +277,10 @@ class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.candle_chart = CandlestickChart(self, width=960, height=540)
-        self.candle_chart.grid(row=0, column=1, sticky="nsew")
+        self.candle_chart = CandlestickChart(self, width = 960, height = 540)
+        self.candle_chart.grid(row=0, column=0, sticky="nsew")
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
         
     def convert_data_for_chart(self, df):
         # Ensure index is reset so we can enumerate
@@ -408,7 +411,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.clear_content()
         selected = self.strategy_var.get()
         
-        if selected == "Simple Moving Average Crossover":
+        if selected == "Double Moving Average Crossover":
             ttk.Label(self.content, text="Short Window:").pack(anchor="w")
             self.short_entry = ttk.Entry(self.content)
             self.short_entry.pack(fill="x", pady=2)
