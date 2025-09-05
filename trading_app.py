@@ -408,7 +408,6 @@ class ExecutionCollasibleFrame(CollapsibleFrame):
     def __init__(self, parent):
         super().__init__(parent, title="Execution")
         self.starting_capital_label = ttk.Label(self.content, text="Starting Capital:")
-        self.starting_capital_label.text
         self.starting_capital_label.pack(anchor="w")
         self.starting_capital_input = ttk.Entry(self.content)
         self.starting_capital_input.insert(0, 10000)
