@@ -205,11 +205,18 @@ class TradingStrategyFrame(ttk.Frame):
             chart_frame.candle_chart.plot(chart_frame.convert_data_for_chart(candle_data_pd))       
         return candle_data
     
-    def output_not_a_number_error(self, data, name):
-        self.chat_output.config(state=tk.NORMAL)
-        self.chat_output.delete(1.0, tk.END)
-        self.chat_output.insert(tk.END, f"Please enter a valid {name} (number only).\n")
-        self.chat_output.config(state=tk.DISABLED)
+    def is_input_valid_float(self, input, name):
+        try:
+            float(input)
+            return True
+        except ValueError:
+            self.chat_output.config(state=tk.NORMAL)
+            self.chat_output.delete(1.0, tk.END)
+            self.chat_output.insert(tk.END, f"Please enter a valid {name} (number only).\n")
+            self.chat_output.config(state=tk.DISABLED)
+            return False
+            
+        
     
     def run_backtest(self):
         picked_strategy = self.strategy_var.get()
@@ -223,20 +230,20 @@ class TradingStrategyFrame(ttk.Frame):
             "long_window"    :   self.strategy_tab.long_entry.get().strip()
         }
         initial_capital = self.execution_tab.starting_capital_input.get().strip()
-        if not initial_capital.isdigit():
-            self.output_not_a_number_error(initial_capital, "Initial Capital")
+        if not self.is_input_valid_float(initial_capital, "Starting Capital"):
+            return
         slippage = self.execution_tab.slippage_input.get().strip()
-        if not slippage.isdigit():
-            self.output_not_a_number_error(slippage, "Slippage")
+        if not self.is_input_valid_float(slippage, "Slippage"):     
+            return
         fee_rate = self.execution_tab.fee_rate_input.get().strip()
-        if not fee_rate.isdigit():
-            self.output_not_a_number_error(fee_rate, "Fee Rate")
+        if not self.is_input_valid_float(fee_rate, "Fee Rate"):          
+            return
         fee_min = self.execution_tab.minimum_fee_input.get().strip()
-        if not fee_min.isdigit():
-            self.output_not_a_number_error(fee_min, "Minimum Fee")
+        if not self.is_input_valid_float(fee_min, "Minimum Fee"):        
+            return
         lot_size = self.execution_tab.lot_size_input.get().strip()
         if not lot_size.isdigit():
-            self.output_not_a_number_error(lot_size, "Lot Size")
+            return
         
         backtest_results = engine.backtest_strategy(
             data = candle_data, 
@@ -245,21 +252,22 @@ class TradingStrategyFrame(ttk.Frame):
             position_sizer = pos_sz.all_in_sizer,
             starting_capital = float(initial_capital),
             allow_short = False,
-            slippage = slippage,
-            fee_rate = fee_rate,
-            fee_min = fee_min,
-            lot_size = lot_size
+            slippage = float(slippage),
+            fee_rate = float(fee_rate),
+            fee_min = float(fee_min),
+            lot_size = int(lot_size)
             )
         if not backtest_results.empty:
             backtest_frame = self.controller.frames[BackTestingResultsFrame]
             backtest_frame.populate_backtest_display(backtest_results)
             eqc_x_labels = backtest_results.index.tolist()
             eqc_y_values = pd.to_numeric(backtest_results["equity"], errors="coerce").dropna().tolist()
-            backtest_frame.eq_curve.equity_chart.clear()
             if eqc_y_values:
                 # Ensure labels are strings if provided
                 if eqc_x_labels is not None:
                     eqc_x_labels = [str(lbl) for lbl in eqc_x_labels]
+                    backtest_frame.eq_curve.reset_chart()
+                    backtest_frame.eq_curve.create_chart()
                     backtest_frame.eq_curve.equity_chart.plot(eqc_y_values, eqc_x_labels)
         self.controller.show_frame(BackTestingResultsFrame)
    
@@ -326,9 +334,19 @@ class EquityChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
+        self.equity_chart = None
+        self.grid_columnconfigure(0, weight=1)
+        
+    def reset_chart(self):
+        # Remove any previous chart widget cleanly
+        for child in self.winfo_children():
+            child.destroy()
+        self.equity_chart = None
+    
+    def create_chart(self):
         self.equity_chart = LineChart(self, width=960, height=540)
         self.equity_chart.grid(row=0, column=1, sticky="nsew")
-        self.grid_columnconfigure(0, weight=1)
+        return self.equity_chart
 
 #--- Collapsible frames for vertical tab controls ---
 class CollapsibleFrame(ttk.Frame):
@@ -410,7 +428,7 @@ class ExecutionCollasibleFrame(CollapsibleFrame):
         self.starting_capital_label = ttk.Label(self.content, text="Starting Capital:")
         self.starting_capital_label.pack(anchor="w")
         self.starting_capital_input = ttk.Entry(self.content)
-        self.starting_capital_input.insert(0, 10000)
+        self.starting_capital_input.insert(0, 10000.0)
         self.starting_capital_input.pack(fill="x", pady=2)
         self.slippage_label = ttk.Label(self.content, text="Slippage")
         self.slippage_label.pack(anchor="w")
