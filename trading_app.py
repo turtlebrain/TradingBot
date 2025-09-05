@@ -45,10 +45,10 @@ class TradingBotApp:
         frame = self.frames[frame_calss]
         frame.tkraise() 
     
-    def create_tab(self, notebook, title, frame_class):
+    def create_tab(self, notebook, title, frame_factory):
         tab_frame = ttk.Frame(notebook, padding=10)
         notebook.add(tab_frame, text=title)
-        collapsible = frame_class(tab_frame)
+        collapsible = frame_factory(tab_frame)
         collapsible.pack(side='left', fill='y')
     
     def add_outer_rows_and_cols(self, frame: ttk.Frame):
@@ -127,8 +127,11 @@ class TradingStrategyFrame(ttk.Frame):
         notebook.grid(row=0, column=0, sticky="ns")  # fill vertically
 
         # Create Tabs
-        self.controller.create_tab(notebook, "General", GeneralInfoCollapsibleFrame)
-        self.controller.create_tab(notebook, "Strategy", StrategyCollapsibleFrame)
+        self.strategy_var = tk.StringVar(value = "Simple Moving Average Crossover")
+        self.controller.create_tab(notebook, "General", 
+                                   lambda parent: GeneralInfoCollapsibleFrame(parent, self.strategy_var))
+        self.controller.create_tab(notebook, "Strategy", 
+                                   lambda parent: StrategyCollapsibleFrame(parent, self.strategy_var))
         self.controller.create_tab(notebook, "Execution", ExecutionCollasibleFrame)
 
         # --- Right-hand content area ---
@@ -321,8 +324,9 @@ class CollapsibleFrame(ttk.Frame):
             self.content.forget()
         
 class GeneralInfoCollapsibleFrame(CollapsibleFrame):
-    def __init__(self, parent):
+    def __init__(self, parent, strategy_var):
         super().__init__(parent, title = "General")
+        self.strategy_var = strategy_var
         self.stock_label = ttk.Label(self.content, text="Stock Symbol:")
         self.stock_label.pack(anchor="w")
         self.stock_input = ttk.Entry(self.content)
@@ -342,13 +346,33 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
         trading_strategy = strategies.TradingStrategy
         self.strategy_label = ttk.Label(self.content, text="Strategy:")
         self.strategy_label.pack(anchor="w")
-        self.strategy_var = tk.StringVar(value="Simple Moving Average Crossover")
-        self.strategy_menu = ttk.OptionMenu(self.content, self.strategy_var, "Simple Moving Average Crossover", *trading_strategy.trading_strategies.keys())
+        self.strategy_menu = ttk.OptionMenu(self.content, self.strategy_var, self.strategy_var.get(), *trading_strategy.trading_strategies.keys())
         self.strategy_menu.pack(fill="x", pady=2)
 
 class StrategyCollapsibleFrame(CollapsibleFrame):
-    def __init__(self, parent):
+    def __init__(self, parent, strategy_var):
         super().__init__(parent, title="Strategy")    
+        self.strategy_var = strategy_var
+        self.strategy_var.trace_add("write", self.update_contents)
+        self.update_contents()
+        
+    def clear_content(self):
+        for widget in self.content.winfo_children():
+            widget.destroy()
+    
+    def update_contents(self, *args):
+        self.clear_content()
+        selected = self.strategy_var.get()
+        
+        if selected == "Simple Moving Average Crossover":
+            ttk.Label(self.content, text="Short Window:").pack(anchor="w")
+            ttk.Entry(self.content).pack(fill="x", pady=2)
+            ttk.Label(self.content, text="Long Window:").pack(anchor="w")
+            ttk.Entry(self.content).pack(fill="x", pady=2)
+
+        else:
+            ttk.Label(self.content, text=f"{selected} \n is not implemented yet").pack(anchor="w")
+
         
 class ExecutionCollasibleFrame(CollapsibleFrame):
     def __init__(self, parent):
