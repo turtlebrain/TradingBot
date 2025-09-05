@@ -5,13 +5,13 @@ class TradingStrategy:
     def __init__(self, data):
         self.data = data
     
-    def simple_moving_average_crossover(data, short_window=50, long_window=200):
+    def simple_moving_average_crossover(data, params):
         """
         Implements a Simple Moving Average (SMA) Crossover trading strategy.
 
         Parameters:
-            short_window (int): The window size for the short-term moving average.
-            long_window (int): The window size for the long-term moving average.
+            params['short_window'] short_window (int): The window size for the short-term moving average.
+            params['long_window'] long_window (int): The window size for the long-term moving average.
 
         Returns:
             pd.DataFrame: DataFrame containing the price, short and long moving averages,
@@ -22,6 +22,8 @@ class TradingStrategy:
             Generates a sell signal (-1) when the short-term moving average crosses below the long-term moving average
             Otherwise return a flat signal (0) if the short-term moving average = long-term moving average
         """
+        short_window = int(params['short_window'])
+        long_window = int(params['long_window'])
         signals = pd.DataFrame(index=data.index)
         signals['price'] = data['close']
         signals['short_mavg'] = data['close'].rolling(window=short_window, min_periods=1).mean()

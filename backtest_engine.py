@@ -7,6 +7,7 @@ engine_tol = 1e-9
 def backtest_strategy(
     data :pd.DataFrame, 
     strategy_func, 
+    strategy_param,
     position_sizer, 
     starting_capital=10000.0, 
     allow_short=False, 
@@ -36,7 +37,7 @@ def backtest_strategy(
         raise ValueError("lot_size must be at least 1.")
     shares = 0
     cash = float(starting_capital)
-    signals = strategy_func(candle_data)
+    signals = strategy_func(candle_data, strategy_param)
     
     # Output DataFrame to store backtest results
     out = {
