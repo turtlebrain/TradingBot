@@ -21,14 +21,14 @@ class TradingBotApp:
     def __init__(self, root):
         self.root = root
         self.root.title("AI trading Bot")
-        self.root.geometry("900x800")
+        self.root.geometry("1280x720")
         self.system_running = False
         
         # Change default font for all widgets to Poppins
         default_font = tkFont.nametofont("TkDefaultFont")
         default_font.configure(family="Poppins")
         # Container to hold all frames
-        container = tk.Frame(root)
+        container = ttk.Frame(root)
         container.pack(fill="both", expand=True)
         container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
@@ -39,13 +39,19 @@ class TradingBotApp:
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(LoginFrame)    
+        self.show_frame(TradingStrategyFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
         frame.tkraise() 
     
-    def add_outer_rows_and_cols(self, frame: tk.Frame):
+    def create_tab(self, notebook, title, frame_class):
+        tab_frame = ttk.Frame(notebook, padding=10)
+        notebook.add(tab_frame, text=title)
+        collapsible = frame_class(tab_frame)
+        collapsible.pack(side='left', fill='y')
+    
+    def add_outer_rows_and_cols(self, frame: ttk.Frame):
         cols, rows = frame.grid_size()
         frame.grid_columnconfigure(0, weight=1)
         frame.grid_columnconfigure(cols+1, weight=1)
@@ -57,7 +63,7 @@ class TradingBotApp:
         self.root.quit()
         self.root.destroy()
             
-class LoginFrame(tk.Frame):
+class LoginFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -74,7 +80,7 @@ class LoginFrame(tk.Frame):
         messagebox.showinfo("Login", f"After logging in, you'll be redirected to: {qt_api.REDIRECT_URI}?code=YOUR_CODE_HERE")
         self.controller.show_frame(AuthFrame)
         
-class AuthFrame(tk.Frame):
+class AuthFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -105,58 +111,55 @@ class AuthFrame(tk.Frame):
                 chart_frame.candle_chart.plot(data=chart_frame.convert_data_for_chart(initial_df))
         self.controller.show_frame(TradingStrategyFrame)
 
-class TradingStrategyFrame(tk.Frame):
+class TradingStrategyFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         
-        self.stock_label = ttk.Label(self, text="Stock Symbol:")
-        self.stock_label.grid(row=1, column=1, padx=2, pady=2, sticky='we')
-        self.stock_input = ttk.Entry(self)
-        self.stock_input.insert(0, "AAPL")
-        self.stock_input.grid(row=1, column=2, padx=2, pady=2, sticky='we')
-        
-        self.start_date_label = ttk.Label(self, text="Start Date:")
-        self.start_date_label.grid(row=2, column=1, padx=2, pady=2, sticky='we')
-        self.start_date_input = DateEntry(self, year=2025, month=8, day=1)
-        self.start_date_input.grid(row=2, column=2, padx=2, pady=2, sticky='we')
-        
-        self.end_date_label = ttk.Label(self, text="End Date:")
-        self.end_date_label.grid(row=3, column=1, padx=2, pady=2, sticky='we')
-        self.end_date_input = DateEntry(self, year=2025, month=8, day=31)
-        self.end_date_input.grid(row=3, column=2, padx=2, pady=2, sticky='we')
-        
-        trading_strategy = strategies.TradingStrategy
-        self.strategy_label = ttk.Label(self, text="Strategy:")
-        self.strategy_label.grid(row=4, column=1, padx=2, pady=2, sticky='we')
-        self.strategy_var = tk.StringVar(value="Simple Moving Average Crossover")
-        self.strategy_menu = ttk.OptionMenu(self, self.strategy_var, "Simple Moving Average Crossover", *trading_strategy.trading_strategies.keys())
-        self.strategy_menu.grid(row=4, column=2, padx=2, pady=2, sticky='we')
-        
-        self.starting_capital_label = ttk.Label(self, text="Starting Capital:")
-        self.starting_capital_label.grid(row=5, column=1, padx=2, pady=2, sticky='we')
-        self.starting_capital_input = ttk.Entry(self)
-        self.starting_capital_input.insert(0, 10000)
-        self.starting_capital_input.grid(row=5, column=2, padx=2, pady=2, sticky='we')
-        
-        self.search_button = ttk.Button(self, width=50, text="Search", command= self.search)
-        self.search_button.grid(row=6, column=1, padx=2, pady=2, sticky='ns')
-        self.backtest_button = ttk.Button(self, width=50, text="Run Backtest", command=self.run_backtest) 
-        self.backtest_button.grid(row=6, column=2, padx=2, pady=2, sticky='ns')
-        
-        # Chart and chat output area   
-        self.chart_frame = CandlestickChartFrame(self, controller)
-        self.chart_frame.grid(row=7, column=1, columnspan=2, padx=5, pady=5, sticky = "we")
-        self.chat_output = tk.Text(self, height = 5, state=tk.DISABLED)
-        self.chat_output.grid(row=8, column=1, columnspan=2, padx=5, pady=5, sticky = "nsew")
-        self.scrollbar = ttk.Scrollbar(self, command=self.chat_output.yview)
-        self.scrollbar.grid(row=8, column=3, sticky='nsw')
+        # --- Sidebar + main content container ---
+        # Use grid for the whole TradingStrategyFrame
+        self.columnconfigure(0, weight=0)  # sidebar fixed width
+        self.columnconfigure(1, weight=1)  # main content expands
+        self.rowconfigure(0, weight=1)
+
+        # Notebook in column 0
+        notebook = ttk.Notebook(self, style="TNotebook")
+        notebook.grid(row=0, column=0, sticky="ns")  # fill vertically
+
+        # Create Tabs
+        self.controller.create_tab(notebook, "General", GeneralInfoCollapsibleFrame)
+        self.controller.create_tab(notebook, "Strategy", StrategyCollapsibleFrame)
+        self.controller.create_tab(notebook, "Execution", ExecutionCollasibleFrame)
+
+        # --- Right-hand content area ---
+        right_frame = ttk.Frame(self)
+        right_frame.grid(row=0, column=1, sticky="nsew")
+        right_frame.columnconfigure(0, weight=1)
+        right_frame.rowconfigure(1, weight=1)  # chart expands
+
+        # Buttons
+        self.search_button = ttk.Button(right_frame, width=50, text="Search", command=self.search)
+        self.search_button.grid(row=0, column=0, padx=2, pady=2, sticky = "we")
+
+        self.backtest_button = ttk.Button(right_frame, width=50, text="Run Backtest", command=self.run_backtest)
+        self.backtest_button.grid(row=0, column=1, padx=2, pady=2, sticky="we")
+
+        # Chart
+        self.chart_frame = CandlestickChartFrame(right_frame, controller)
+        self.chart_frame.grid(row=1, column=0, columnspan=2, padx=5, pady=5)
+
+        # Chat output
+        self.chat_output = tk.Text(right_frame, height=5, state=tk.DISABLED)
+        self.chat_output.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+
+        self.scrollbar = ttk.Scrollbar(right_frame, command=self.chat_output.yview)
+        self.scrollbar.grid(row=2, column=2, sticky='ns')
         self.chat_output['yscrollcommand'] = self.scrollbar.set
-        
-        self.clear_button = ttk.Button(self, text="Clear", command=self.clear_form)
-        self.clear_button.grid(row=9, column=1, columnspan=2, pady=2, sticky='ns')
-        
-        self.controller.add_outer_rows_and_cols(self)
+
+        # Clear button
+        self.clear_button = ttk.Button(right_frame, text="Clear", command=self.clear_form)
+        self.clear_button.grid(row=3, column=0, columnspan=2, pady=2, sticky='ns')
+
 
     def clear_form(self):
         self.chat_output.config(state=tk.NORMAL) 
@@ -231,11 +234,11 @@ class TradingStrategyFrame(tk.Frame):
             backtest_frame.eq_curve.equity_chart.plot(eqc_y_values, eqc_x_labels)
         self.controller.show_frame(BackTestingResultsFrame)
    
-class CandlestickChartFrame(tk.Frame):
+class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.candle_chart = CandlestickChart(self, width=832, height=468)
+        self.candle_chart = CandlestickChart(self, width=1600, height=900)
         self.candle_chart.grid(row=0, column=1, sticky="nsew")
         self.grid_columnconfigure(0, weight=1)
         
@@ -248,7 +251,7 @@ class CandlestickChartFrame(tk.Frame):
             for i, row in df.iterrows()
         ]
                            
-class BackTestingResultsFrame(tk.Frame):
+class BackTestingResultsFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -290,15 +293,72 @@ class BackTestingResultsFrame(tk.Frame):
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
 
-class EquityChartFrame(tk.Frame):
+class EquityChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.equity_chart = LineChart(self, width=832, height=468)
+        self.equity_chart = LineChart(self, width=1600, height=900)
         self.equity_chart.grid(row=0, column=1, sticky="nsew")
         self.grid_columnconfigure(0, weight=1)
-        
+
+#--- Collapsible frames for vertical tab controls ---
+class CollapsibleFrame(ttk.Frame):
+    def __init__(self, parent, title="", *args, **kwargs):
+        super().__init__(parent, *args, **kwargs)
+        self.show = tk.BooleanVar(value=True)
+        self.header = ttk.Checkbutton(
+            self, text=title, style="Toolbutton",
+            variable=self.show, command=self._toggle
+        )
+        self.header.pack(fill="x", pady=2)
+        self.content = ttk.Frame(self)
+        self.content.pack(fill="both", expand=True)
     
+    def _toggle(self):
+        if self.show.get():
+            self.content.pack(fill="both", expand=True)
+        else:
+            self.content.forget()
+        
+class GeneralInfoCollapsibleFrame(CollapsibleFrame):
+    def __init__(self, parent):
+        super().__init__(parent, title = "General")
+        self.stock_label = ttk.Label(self.content, text="Stock Symbol:")
+        self.stock_label.pack(anchor="w")
+        self.stock_input = ttk.Entry(self.content)
+        self.stock_input.insert(0, "AAPL")
+        self.stock_input.pack(fill="x", pady=2)
+        
+        self.start_date_label = ttk.Label(self.content, text="Start Date:")
+        self.start_date_label.pack(anchor="w")
+        self.start_date_input = DateEntry(self.content, year=2025, month=8, day=1)
+        self.start_date_input.pack(fill="x",pady=2)
+        
+        self.end_date_label = ttk.Label(self.content, text="End Date:")
+        self.end_date_label.pack(anchor="w")
+        self.end_date_input = DateEntry(self.content, year=2025, month=8, day=31)
+        self.end_date_input.pack(fill="x", pady=2)
+        
+        trading_strategy = strategies.TradingStrategy
+        self.strategy_label = ttk.Label(self.content, text="Strategy:")
+        self.strategy_label.pack(anchor="w")
+        self.strategy_var = tk.StringVar(value="Simple Moving Average Crossover")
+        self.strategy_menu = ttk.OptionMenu(self.content, self.strategy_var, "Simple Moving Average Crossover", *trading_strategy.trading_strategies.keys())
+        self.strategy_menu.pack(fill="x", pady=2)
+
+class StrategyCollapsibleFrame(CollapsibleFrame):
+    def __init__(self, parent):
+        super().__init__(parent, title="Strategy")    
+        
+class ExecutionCollasibleFrame(CollapsibleFrame):
+    def __init__(self, parent):
+        super().__init__(parent, title="Execution")
+        self.starting_capital_label = ttk.Label(self.content, text="Starting Capital:")
+        self.starting_capital_label.pack(anchor="w")
+        self.starting_capital_input = ttk.Entry(self.content)
+        self.starting_capital_input.insert(0, 10000)
+        self.starting_capital_input.pack(fill="x", pady=2)
+        
 if __name__ == '__main__':
     root = tk.Tk()
     app = TradingBotApp(root)
