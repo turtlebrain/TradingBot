@@ -205,6 +205,12 @@ class TradingStrategyFrame(ttk.Frame):
             chart_frame.candle_chart.plot(chart_frame.convert_data_for_chart(candle_data_pd))       
         return candle_data
     
+    def output_not_a_number_error(self, data, name):
+        self.chat_output.config(state=tk.NORMAL)
+        self.chat_output.delete(1.0, tk.END)
+        self.chat_output.insert(tk.END, f"Please enter a valid {name} (number only).\n")
+        self.chat_output.config(state=tk.DISABLED)
+    
     def run_backtest(self):
         picked_strategy = self.strategy_var.get()
         strategies_map = strategies.TradingStrategy.trading_strategies
@@ -212,16 +218,26 @@ class TradingStrategyFrame(ttk.Frame):
         if isinstance(candle_data, list):
             candle_data = pd.DataFrame(candle_data)
         # Build state for position sizer    
-        initial_capital = self.execution_tab.starting_capital_input.get().strip()
         strategy_params = { 
             "short_window"   :   self.strategy_tab.short_entry.get().strip(),
             "long_window"    :   self.strategy_tab.long_entry.get().strip()
         }
+        initial_capital = self.execution_tab.starting_capital_input.get().strip()
         if not initial_capital.isdigit():
-            self.chat_output.config(state=tk.NORMAL)
-            self.chat_output.delete(1.0, tk.END)
-            self.chat_output.insert(tk.END, "Please enter a valid starting capital (number only).\n")
-            self.chat_output.config(state=tk.DISABLED)
+            self.output_not_a_number_error(initial_capital, "Initial Capital")
+        slippage = self.execution_tab.slippage_input.get().strip()
+        if not slippage.isdigit():
+            self.output_not_a_number_error(slippage, "Slippage")
+        fee_rate = self.execution_tab.fee_rate_input.get().strip()
+        if not fee_rate.isdigit():
+            self.output_not_a_number_error(fee_rate, "Fee Rate")
+        fee_min = self.execution_tab.minimum_fee_input.get().strip()
+        if not fee_min.isdigit():
+            self.output_not_a_number_error(fee_min, "Minimum Fee")
+        lot_size = self.execution_tab.lot_size_input.get().strip()
+        if not lot_size.isdigit():
+            self.output_not_a_number_error(lot_size, "Lot Size")
+        
         backtest_results = engine.backtest_strategy(
             data = candle_data, 
             strategy_func = strategies_map[picked_strategy], 
@@ -229,10 +245,10 @@ class TradingStrategyFrame(ttk.Frame):
             position_sizer = pos_sz.all_in_sizer,
             starting_capital = float(initial_capital),
             allow_short = False,
-            slippage = 0.001,
-            fee_rate = 0.001,
-            fee_min = 1.0,
-            lot_size = 1
+            slippage = slippage,
+            fee_rate = fee_rate,
+            fee_min = fee_min,
+            lot_size = lot_size
             )
         if not backtest_results.empty:
             backtest_frame = self.controller.frames[BackTestingResultsFrame]
@@ -392,6 +408,7 @@ class ExecutionCollasibleFrame(CollapsibleFrame):
     def __init__(self, parent):
         super().__init__(parent, title="Execution")
         self.starting_capital_label = ttk.Label(self.content, text="Starting Capital:")
+        self.starting_capital_label.text
         self.starting_capital_label.pack(anchor="w")
         self.starting_capital_input = ttk.Entry(self.content)
         self.starting_capital_input.insert(0, 10000)
