@@ -30,9 +30,11 @@ def backtest_strategy(
     :return: DataFrame with backtest results including equity curve
     """
     # Generate signals using the provided strategy function
-    candle_data = data.copy()
-    if candle_data.empty:
-        raise ValueError("Input data is empty.")
+    candle_data = pd.DataFrame()
+    if data is not None:
+        candle_data = data.copy()
+        if candle_data.empty:
+            raise ValueError("Input data is empty.")
     if lot_size < 1:
         raise ValueError("lot_size must be at least 1.")
     shares = 0

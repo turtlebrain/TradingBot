@@ -11,6 +11,7 @@ from ChartForgeTK import LineChart
 import tkinter.font as tkFont
 import position_sizing as pos_sz
 import backtest_engine as engine
+import requests 
 
 # Global variables to store access token and API server URL
 access_token = ''
@@ -189,22 +190,28 @@ class TradingStrategyFrame(ttk.Frame):
             self.chat_output.insert(tk.END, "No access token found, please log in and authenticate first.\n")
             self.chat_output.config(state=tk.DISABLED)
             return   
-        symbol_data = qt_api.get_stock_data(access_token=my_access_token, api_server=my_api_server, symbol_str=stock_symbol)
-        if not symbol_data:
-            self.chat_output.insert(tk.END, f"No data found for {stock_symbol}.\n")
-            self.chat_output.config(state=tk.DISABLED)
-            return
-        symbol_id = symbol_data[0]['symbolId']
-        candle_data = qt_api.get_candles_paginated(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.general_tab.start_date_input.get_date(), end_date=self.general_tab.end_date_input.get_date())
-        candle_data_pd = pd.DataFrame(candle_data)
-        if show_output:
-            self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
-            self.chat_output.config(state=tk.DISABLED)
-            # Plot candlestick chart
-            chart_frame = self.chart_frame
-            chart_frame.candle_chart.clear()
-            chart_frame.candle_chart.plot(chart_frame.convert_data_for_chart(candle_data_pd))       
-        return candle_data
+        try:   
+            symbol_data = qt_api.get_stock_data(access_token=my_access_token, api_server=my_api_server, symbol_str=stock_symbol)
+            if not symbol_data:
+                self.chat_output.insert(tk.END, f"No data found for {stock_symbol}.\n")
+                self.chat_output.config(state=tk.DISABLED)
+                return
+            symbol_id = symbol_data[0]['symbolId']
+            candle_data = qt_api.get_candles_paginated(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.general_tab.start_date_input.get_date(), end_date=self.general_tab.end_date_input.get_date())
+            candle_data_pd = pd.DataFrame(candle_data)
+            if show_output:
+                self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
+                self.chat_output.config(state=tk.DISABLED)
+                # Plot candlestick chart
+                chart_frame = self.chart_frame
+                chart_frame.candle_chart.clear()
+                chart_frame.candle_chart.plot(chart_frame.convert_data_for_chart(candle_data_pd))       
+            return candle_data
+        except requests.exceptions.HTTPError as err:
+            self.chat_output.config(state=tk.NORMAL)
+            self.chat_output.delete(1.0, tk.END)
+            self.chat_output.insert(tk.END, f"HTTEP error occurered {err}.\n")
+            self.chat_output.config(state=tk.DISABLED)                 
     
     def is_input_valid_float(self, input, name):
         try:
@@ -247,31 +254,37 @@ class TradingStrategyFrame(ttk.Frame):
         if not lot_size.isdigit():
             return
         
-        backtest_results = engine.backtest_strategy(
-            data = candle_data, 
-            strategy_func = strategies_map[picked_strategy], 
-            strategy_param = strategy_params,
-            position_sizer = pos_sz.all_in_sizer,
-            starting_capital = float(initial_capital),
-            allow_short = False,
-            slippage = float(slippage),
-            fee_rate = float(fee_rate),
-            fee_min = float(fee_min),
-            lot_size = int(lot_size)
-            )
-        if not backtest_results.empty:
-            backtest_frame = self.controller.frames[BackTestingResultsFrame]
-            backtest_frame.populate_backtest_display(backtest_results)
-            eqc_x_labels = backtest_results.index.tolist()
-            eqc_y_values = pd.to_numeric(backtest_results["equity"], errors="coerce").dropna().tolist()
-            if eqc_y_values:
-                # Ensure labels are strings if provided
-                if eqc_x_labels is not None:
-                    eqc_x_labels = [str(lbl) for lbl in eqc_x_labels]
-                    backtest_frame.eq_curve.reset_chart()
-                    backtest_frame.eq_curve.create_chart()
-                    backtest_frame.eq_curve.equity_chart.plot(eqc_y_values, eqc_x_labels)
-        self.controller.show_frame(BackTestingResultsFrame)
+        try:
+            backtest_results = engine.backtest_strategy(
+                data = candle_data, 
+                strategy_func = strategies_map[picked_strategy], 
+                strategy_param = strategy_params,
+                position_sizer = pos_sz.all_in_sizer,
+                starting_capital = float(initial_capital),
+                allow_short = False,
+                slippage = float(slippage),
+                fee_rate = float(fee_rate),
+                fee_min = float(fee_min),
+                lot_size = int(lot_size)
+                )
+            if not backtest_results.empty:
+                backtest_frame = self.controller.frames[BackTestingResultsFrame]
+                backtest_frame.populate_backtest_display(backtest_results)
+                eqc_x_labels = backtest_results.index.tolist()
+                eqc_y_values = pd.to_numeric(backtest_results["equity"], errors="coerce").dropna().tolist()
+                if eqc_y_values:
+                    # Ensure labels are strings if provided
+                    if eqc_x_labels is not None:
+                        eqc_x_labels = [str(lbl) for lbl in eqc_x_labels]
+                        backtest_frame.eq_curve.reset_chart()
+                        backtest_frame.eq_curve.create_chart()
+                        backtest_frame.eq_curve.equity_chart.plot(eqc_y_values, eqc_x_labels)
+            self.controller.show_frame(BackTestingResultsFrame)
+        except ValueError as err:
+            self.chat_output.config(state=tk.NORMAL)
+            self.chat_output.delete(1.0, tk.END)
+            self.chat_output.insert(tk.END, f"Error: {err}.\n")
+            self.chat_output.config(state=tk.DISABLED)
    
 class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
