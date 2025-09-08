@@ -233,10 +233,7 @@ class TradingStrategyFrame(ttk.Frame):
         if isinstance(candle_data, list):
             candle_data = pd.DataFrame(candle_data)  
             
-        strategy_params = { 
-            "short_window"   :   self.strategy_tab.short_entry.get().strip(),
-            "long_window"    :   self.strategy_tab.long_entry.get().strip()
-        }
+        strategy_params = self.strategy_tab.get_strategy_params()
         
         initial_capital = self.execution_tab.starting_capital_input.get().strip()
         if not self.is_input_valid_float(initial_capital, "Starting Capital"):
@@ -433,9 +430,31 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             self.long_entry = ttk.Entry(self.content)
             self.long_entry.pack(fill="x", pady=2)
             self.long_entry.insert(0, 50)
-
+        elif selected == "Support and Resistance Structure":
+            ttk.Label(self.content, text="Distance:").pack(anchor="w")
+            self.distance_entry = ttk.Entry(self.content)
+            self.distance_entry.pack(fill="x", pady=2)
+            self.distance_entry.insert(0, 5)
         else:
             ttk.Label(self.content, text=f"{selected} \n is not implemented yet").pack(anchor="w")
+    
+    def get_strategy_params(self):
+        strategy_params = None
+        selected = self.strategy_var.get()
+        
+        if selected == "Double Moving Average Crossover":
+            strategy_params = { 
+                "short_window"   :   self.short_entry.get().strip(),
+                "long_window"    :   self.long_entry.get().strip()
+            }
+        elif selected == "Support and Resistance Structure":
+            strategy_params = { 
+                "distance"   :   self.distance_entry.get().strip(),
+            }
+        else:
+            raise ValueError("No parameters available for this selected strategy")
+             
+        return strategy_params
 
         
 class ExecutionCollasibleFrame(CollapsibleFrame):

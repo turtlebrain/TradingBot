@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from scipy.signal import find_peaks
 
 class TradingStrategy:
     def __init__(self, data):
@@ -7,7 +8,7 @@ class TradingStrategy:
     
     def double_moving_average_crossover(data, params):
         """
-        Implements a Double Moving Average (SMA) Crossover trading strategy.
+        Implements a Double Moving Average (MA) Crossover trading strategy.
 
         Parameters:
             params['short_window'] short_window (int): The window size for the short-term moving average.
@@ -15,7 +16,7 @@ class TradingStrategy:
 
         Returns:
             pd.DataFrame: DataFrame containing the price, short and long moving averages,
-                          trading signals (1 for buy, 0 for hold/sell), and position changes.
+                          trading signals (1 for buy, -1 for sell, 0 for hold), and position changes.
 
         Strategy Logic:
             Generates a buy signal (1) when the short-term moving average crosses above the long-term moving average, 
@@ -38,13 +39,50 @@ class TradingStrategy:
         
         return signals
     
+    # More reactive to price changes
     def exponential_moving_average_breakout(data):
         # TO-DO
         return 0
     
+    def support_resistace_structure(data, params):
+        """
+        Implements a simple Peak/Valley Detection to find Support and Resistance Levels
         
+        Parameters:
+            params['distance'] distance for peak/valley detection for e.g 5 means peaks are found with at least 5 candles inbetween
+
+        Returns:
+            pd.DataFrame: DataFrame containing the price,
+                          trading signals (1 for buy, 0 for hold/sell), and position changes.
+
+        Strategy Logic:
+            Generates a buy signal (1) when the price bounces off a detected support level
+            Generates a sell signal (-1) when the price rejects a detected resistance level
+            Otherwise return a flat signal (0) 
+        """
+        signals = pd.DataFrame(index=data.index)
+        signals['price'] = data['close']
+        distance = int(params['distance'])
+        # Detect resistance (peaks) and Support (Valleys) in terms of their indices
+        resistance_idx, _ = find_peaks(data['high'], distance = distance)
+        support_idx, _ = find_peaks(-data['low'], distance = distance)
+        # Initialize 'signal' column with 0 (HOLD) by default
+        signals['signal'] = 0 
+        # SELL condition: index in resistance_idx AND close < high
+        sell_mask = signals.index.isin(resistance_idx) & (data['close'] < data['high'])
+        # BUY condition: index in support_idx AND close > low
+        buy_mask = signals.index.isin(support_idx) & (data['close'] > data['low'])
+        # Apply SELL (-1) and BUY (+1) signals
+        signals.loc[sell_mask, 'signal'] = -1
+        signals.loc[buy_mask, 'signal'] = 1    
+        
+        signals['positions'] = signals['signal'].diff().fillna(0)
+        
+        return signals
+    
     # Map of strategy names to their corresponding methods
     trading_strategies = {
         "Double Moving Average Crossover" : double_moving_average_crossover,
         "Exponential Moving Average Breakout" : exponential_moving_average_breakout,
+        "Support and Resistance Structure" : support_resistace_structure,
     }
