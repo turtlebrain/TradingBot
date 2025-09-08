@@ -328,7 +328,7 @@ class BackTestingResultsFrame(ttk.Frame):
         self.grid_columnconfigure(1, weight=1)
 
         self.run_new_test_button = ttk.Button(self, width=50, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=6, column=1, padx=2, pady=2, sticky="ns")
+        self.run_new_test_button.grid(row=5, column=1, padx=2, pady=2, sticky="ns")
         self.controller.add_outer_rows_and_cols(self)
     
     def populate_backtest_display(self, dataframe):
