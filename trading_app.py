@@ -267,15 +267,8 @@ class TradingStrategyFrame(ttk.Frame):
             if not backtest_results.empty:
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
                 backtest_frame.populate_backtest_display(backtest_results)
-                eqc_x_labels = backtest_results.index.tolist()
-                eqc_y_values = pd.to_numeric(backtest_results["equity"], errors="coerce").dropna().tolist()
-                if eqc_y_values:
-                    # Ensure labels are strings if provided
-                    if eqc_x_labels is not None:
-                        eqc_x_labels = [str(lbl) for lbl in eqc_x_labels]
-                        backtest_frame.eq_curve.reset_chart()
-                        backtest_frame.eq_curve.create_chart()
-                        backtest_frame.eq_curve.equity_chart.plot(eqc_y_values, eqc_x_labels)
+                backtest_frame.results_chart.results = backtest_results         
+                backtest_frame.results_chart.update_chart() 
             self.controller.show_frame(BackTestingResultsFrame)
         except ValueError as err:
             self.chat_output.config(state=tk.NORMAL)
@@ -305,13 +298,17 @@ class BackTestingResultsFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.results_label = ttk.Label(self, text="Backtesting Results:")
-        self.results_label.grid(row=1, column=1, padx=2, pady=2)
-        # Equity Curve Chart
-        self.eq_curve = EquityChartFrame(self, controller)
-        self.eq_curve.grid(row=2, column=1, padx=5,pady=5, sticky="ns")
-        # Treeview
+        
         col_headers = ['price', 'signal', 'shares','cash','equity','market_value','order','exec_price','fees','trade_side','pnl','cum_max_equity','drawdown','returns']
+        
+        # Result Chart Area
+        default_result = "equity"
+        self.result_var = tk.StringVar(value = default_result)
+        self.results_menu = ttk.OptionMenu(self, self.result_var, default_result, *col_headers)
+        self.results_menu.grid(row=1, column=1, padx=2, pady=2)
+        self.results_chart = ResultChartFrame(self, controller, pd.DataFrame(), self.result_var)
+        self.results_chart.grid(row=2, column=1, padx=5,pady=5, sticky="ns")
+        # Treeview
         self.backtest_display = ttk.Treeview(self, columns=col_headers, show="headings")
         for col in col_headers:
             self.backtest_display.heading(col, text=col)
@@ -331,7 +328,7 @@ class BackTestingResultsFrame(ttk.Frame):
         self.grid_columnconfigure(1, weight=1)
 
         self.run_new_test_button = ttk.Button(self, width=50, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=5, column=1, padx=2, pady=2, sticky="ns")
+        self.run_new_test_button.grid(row=6, column=1, padx=2, pady=2, sticky="ns")
         self.controller.add_outer_rows_and_cols(self)
     
     def populate_backtest_display(self, dataframe):
@@ -343,12 +340,16 @@ class BackTestingResultsFrame(ttk.Frame):
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
 
-class EquityChartFrame(ttk.Frame):
-    def __init__(self, parent, controller):
+class ResultChartFrame(ttk.Frame):
+    def __init__(self, parent, controller, backtest_results, result_var):
         super().__init__(parent)
         self.controller = controller
-        self.equity_chart = None
+        self.results = backtest_results
+        self.result_var = result_var
+        self.result_var.trace_add("write", self.update_chart)
+        self.update_chart()
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
         
     def reset_chart(self):
         # Remove any previous chart widget cleanly
@@ -357,9 +358,21 @@ class EquityChartFrame(ttk.Frame):
         self.equity_chart = None
     
     def create_chart(self):
-        self.equity_chart = LineChart(self, width=960, height=540)
-        self.equity_chart.grid(row=0, column=1, sticky="nsew")
-        return self.equity_chart
+        self.chart = LineChart(self, width=800, height=450)
+        self.chart.grid(row=0, column=1, sticky="nsew")
+        return self.chart
+    
+    def update_chart(self, *args):
+        if not self.results.empty:
+            selected = self.result_var.get()
+            x_labels = self.results.index.tolist()
+            y_values = pd.to_numeric(self.results[selected], errors="coerce").dropna().tolist()
+            if y_values:
+            # Ensure labels are strings if provided
+                if x_labels is not None:
+                    x_labels = [str(lbl) for lbl in x_labels]
+                    self.reset_chart()
+                    self.create_chart().plot(y_values, x_labels)
 
 #--- Collapsible frames for vertical tab controls ---
 class CollapsibleFrame(ttk.Frame):
