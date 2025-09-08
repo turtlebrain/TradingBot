@@ -66,15 +66,16 @@ class TradingStrategy:
         # Detect resistance (peaks) and Support (Valleys) in terms of their indices
         resistance_idx, _ = find_peaks(data['high'], distance = distance)
         support_idx, _ = find_peaks(-data['low'], distance = distance)
-        signals['signal'] = None
-        for i in range(len(signals)):
-            if i in resistance_idx and data['close'].iloc[i] < data['high'].iloc[i]:
-                signals['signal'].iloc[i] = -1 #SELL
-            elif i in support_idx and data['close'].iloc[i] > data['low'].iloc[i]:
-                signals['signal'].iloc[i] = 1 #BUY
-            else:
-                signals['signal'].iloc[i] = 0 #HOLD
-                
+        # Initialize 'signal' column with 0 (HOLD) by default
+        signals['signal'] = 0 
+        # SELL condition: index in resistance_idx AND close < high
+        sell_mask = signals.index.isin(resistance_idx) & (data['close'] < data['high'])
+        # BUY condition: index in support_idx AND close > low
+        buy_mask = signals.index.isin(support_idx) & (data['close'] > data['low'])
+        # Apply SELL (-1) and BUY (+1) signals
+        signals.loc[sell_mask, 'signal'] = -1
+        signals.loc[buy_mask, 'signal'] = 1    
+        
         signals['positions'] = signals['signal'].diff().fillna(0)
         
         return signals
