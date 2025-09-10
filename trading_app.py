@@ -106,12 +106,7 @@ class AuthFrame(ttk.Frame):
         api_server = token_data.get('api_server', '')   
         access_token = token_data.get('access_token', '')
         if api_server and access_token:
-            initial_df = self.controller.frames[TradingStrategyFrame].search(show_output=False)
-            if isinstance(initial_df, list):
-                initial_df = pd.DataFrame(initial_df)
-                chart_frame = self.controller.frames[TradingStrategyFrame].chart_frame
-                chart_frame.candle_chart.clear()
-                chart_frame.candle_chart.plot(data=chart_frame.convert_data_for_chart(initial_df))
+            self.controller.frames[TradingStrategyFrame].search(show_output=True)
         self.controller.show_frame(TradingStrategyFrame)
 
 class TradingStrategyFrame(ttk.Frame):
@@ -198,15 +193,21 @@ class TradingStrategyFrame(ttk.Frame):
                 self.chat_output.config(state=tk.DISABLED)
                 return
             symbol_id = symbol_data[0]['symbolId']
-            candle_data = qt_api.get_candles_paginated(access_token=my_access_token, api_server=my_api_server, symbol_id=symbol_id, start_date=self.general_tab.start_date_input.get_date(), end_date=self.general_tab.end_date_input.get_date())
+            chart_frame = self.chart_frame
+            candle_data = qt_api.get_candles_paginated(
+                access_token=my_access_token, 
+                api_server=my_api_server, 
+                symbol_id=symbol_id, 
+                start_date=self.general_tab.start_date_input.get_date(), 
+                end_date=self.general_tab.end_date_input.get_date(),
+                interval= chart_frame.time_interval
+            )
             candle_data_pd = pd.DataFrame(candle_data)
             if show_output:
                 self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
                 self.chat_output.config(state=tk.DISABLED)
                 # Plot candlestick chart
-                chart_frame = self.chart_frame
-                chart_frame.candle_chart.clear()
-                chart_frame.candle_chart.plot(chart_frame.convert_data_for_chart(candle_data_pd))       
+                chart_frame.update_chart(candle_data_pd)
             return candle_data
         except requests.exceptions.HTTPError as err:
             self.chat_output.config(state=tk.NORMAL)
@@ -286,7 +287,10 @@ class CandlestickChartFrame(ttk.Frame):
         super().__init__(parent)
         self.controller = controller
         self.candle_chart = CandlestickChart(self, width = 960, height = 540)
-        self.candle_chart.grid(row=0, column=0, sticky="nsew")
+        self.candle_chart.grid(row=0, column=0, columnspan=4, sticky="nsew")
+        self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
+        self.time_interval = "OneDay"
+        self.timeframe_control = self.create_segmented_control(self.timeframe_options, self.on_timeframe_change)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
         
@@ -298,6 +302,38 @@ class CandlestickChartFrame(ttk.Frame):
             (i, float(row['open']), float(row['high']), float(row['low']), float(row['close']))
             for i, row in df.iterrows()
         ]
+    
+    def update_chart(self, df):
+        self.candle_chart.clear()
+        self.candle_chart.plot(self.convert_data_for_chart(df))       
+    
+    def create_segmented_control(self, options, command = None):
+        self.sg_var = tk.StringVar(value=options[1])
+        self.sg_command = command
+        style = ttk.Style()
+        style.configure("Segmented.TRadiobutton", indicatoron=0, relief="raised")
+        style.map("Segmented.TRadiobutton", relief=[("selected", "sunken")])
+        for i, option in enumerate(options):
+            rb = ttk.Radiobutton(
+                self,
+                text=option,
+                value=option,
+                variable=self.sg_var,
+                command=self._on_select,
+                style="Segmented.TRadiobutton"
+            )
+            rb.grid(row=1,column=i, sticky="nsew")
+            self.columnconfigure(i, weight=1)
+    
+    def _on_select(self):
+        if self.sg_command:
+            self.sg_command(self.sg_var.get())
+            
+    def on_timeframe_change(self, value):
+        self.time_interval = value
+        trading_frame = self.controller.frames[TradingStrategyFrame]
+        trading_frame.search(show_output=True)
+        
                            
 class BackTestingResultsFrame(ttk.Frame):
     def __init__(self, parent, controller):
