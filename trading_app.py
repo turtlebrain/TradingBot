@@ -10,6 +10,7 @@ from ChartForgeTK import CandlestickChart
 from ChartForgeTK import LineChart
 import tkinter.font as tkFont
 import position_sizing as pos_sz
+import risk_control as risk
 import backtest_engine as engine
 import requests 
 
@@ -250,20 +251,24 @@ class TradingStrategyFrame(ttk.Frame):
         lot_size = self.execution_tab.lot_size_input.get().strip()
         if not lot_size.isdigit():
             return
-        
+        sl_func = None
+        if self.execution_tab.stop_loss_var.get():
+            sl_func = risk.StopLoss.average_true_range_stop
+            
         try:
             backtest_results = engine.backtest_strategy(
                 data = candle_data, 
                 strategy_func = strategies_map[picked_strategy], 
                 strategy_param = strategy_params,
                 position_sizer = pos_sz.all_in_sizer,
+                stop_loss_func = sl_func,
                 starting_capital = float(initial_capital),
                 allow_short = False,
                 slippage = float(slippage),
                 fee_rate = float(fee_rate),
                 fee_min = float(fee_min),
                 lot_size = int(lot_size)
-                )
+            )
             if not backtest_results.empty:
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
                 backtest_frame.populate_backtest_display(backtest_results)
@@ -299,7 +304,7 @@ class BackTestingResultsFrame(ttk.Frame):
         super().__init__(parent)
         self.controller = controller
         
-        col_headers = ['price', 'signal', 'shares','cash','equity','market_value','order','exec_price','fees','trade_side','pnl','cum_max_equity','drawdown','returns']
+        col_headers = ['price', 'signal', 'shares','cash','equity','market_value','order','exec_price', 'stop_loss','fees','trade_side','pnl','cum_max_equity','drawdown','returns']
         
         # Result Chart Area
         default_result = "equity"
@@ -470,7 +475,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         return strategy_params
 
         
-class ExecutionCollasibleFrame(CollapsibleFrame):
+class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
         super().__init__(parent, title="Execution")
         self.starting_capital_label = ttk.Label(self.content, text="Starting Capital:")
@@ -498,7 +503,36 @@ class ExecutionCollasibleFrame(CollapsibleFrame):
         self.lot_size_input = ttk.Entry(self.content)
         self.lot_size_input.insert(0, 1)
         self.lot_size_input.pack(fill="x", pady=2)
+        self.stop_loss_var = tk.BooleanVar(value=False)  # OFF by default
+        self.stop_loss_widgets = []  # will hold references to created widgets
+
+        self.stop_loss_toggle = ttk.Checkbutton(
+            self.content, 
+            text="Enable Stop Loss", 
+            variable=self.stop_loss_var, 
+            command=self.toggle_stop_loss, 
+            onvalue=True, 
+            offvalue=False
+        )
+        self.stop_loss_toggle.pack(fill="x", pady=2)
+    
+    def toggle_stop_loss(self):
+        if self.stop_loss_var.get(): 
+            self.create_stop_loss_widgets()
+        else:
+            self.remove_stop_loss_widgets()
+    
+    def create_stop_loss_widgets(self):
+        self.stop_loss_widgets = [] #reset list
         
+        time_interval_label = ttk.Label(self.content, text="ATR Time Interval: 14")
+        time_interval_label.pack(anchor="w")
+        self.stop_loss_widgets.append(time_interval_label)
+
+        
+    def remove_stop_loss_widgets(self):
+        for widget in self.stop_loss_widgets:
+            widget.destroy()
         
 if __name__ == '__main__':
     root = tk.Tk()

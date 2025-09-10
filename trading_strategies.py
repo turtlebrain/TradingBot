@@ -27,6 +27,8 @@ class TradingStrategy:
         long_window = int(params['long_window'])
         signals = pd.DataFrame(index=data.index)
         signals['price'] = data['close']
+        signals['high'] = data['high']
+        signals['low'] = data['low']
         signals['short_mavg'] = data['close'].rolling(window=short_window, min_periods=1).mean()
         signals['long_mavg'] = data['close'].rolling(window=long_window, min_periods=1).mean()
         
@@ -62,6 +64,8 @@ class TradingStrategy:
         """
         signals = pd.DataFrame(index=data.index)
         signals['price'] = data['close']
+        signals['high'] = data['high']
+        signals['low'] = data['low']
         distance = int(params['distance'])
         # Detect resistance (peaks) and Support (Valleys) in terms of their indices
         resistance_idx, _ = find_peaks(data['high'], distance = distance)
