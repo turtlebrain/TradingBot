@@ -10,6 +10,7 @@ from ChartForgeTK import CandlestickChart
 from ChartForgeTK import LineChart
 import tkinter.font as tkFont
 import position_sizing as pos_sz
+import risk_control as risk
 import backtest_engine as engine
 import requests 
 
@@ -257,6 +258,7 @@ class TradingStrategyFrame(ttk.Frame):
                 strategy_func = strategies_map[picked_strategy], 
                 strategy_param = strategy_params,
                 position_sizer = pos_sz.all_in_sizer,
+                stop_loss_func = risk.StopLoss.average_true_range_stop,
                 starting_capital = float(initial_capital),
                 allow_short = False,
                 slippage = float(slippage),
@@ -299,7 +301,7 @@ class BackTestingResultsFrame(ttk.Frame):
         super().__init__(parent)
         self.controller = controller
         
-        col_headers = ['price', 'signal', 'shares','cash','equity','market_value','order','exec_price','fees','trade_side','pnl','cum_max_equity','drawdown','returns']
+        col_headers = ['price', 'signal', 'shares','cash','equity','market_value','order','exec_price', 'stop_loss','fees','trade_side','pnl','cum_max_equity','drawdown','returns']
         
         # Result Chart Area
         default_result = "equity"

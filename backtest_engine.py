@@ -9,6 +9,7 @@ def backtest_strategy(
     strategy_func, 
     strategy_param,
     position_sizer, 
+    stop_loss_func,
     starting_capital=10000.0, 
     allow_short=False, 
     slippage=0.001, 
@@ -20,7 +21,9 @@ def backtest_strategy(
     Backtests a trading strategy on historical data.
     :param data: DataFrame with historical price data 
     :param strategy_func: Function that generates trading signals
+    :param strategy_param: Strategy parameters being passed to strategy function
     :param position_sizer: Function that determines position size based on state
+    :param stop_loss_func: Function that determines the stop loss to manage risk
     :param initial_capital: Starting capital for backtest
     :param allow_short: Whether to allow short selling
     :param slippage: Proportional slippage per trade (e.g., 0.001 for 0.1%)
@@ -40,7 +43,9 @@ def backtest_strategy(
     shares = 0
     cash = float(starting_capital)
     signals = strategy_func(candle_data, strategy_param)
-    
+    if stop_loss_func is not None:
+        signals = stop_loss_func(signals)
+        
     # Output DataFrame to store backtest results
     out = {
         "price": [],
@@ -51,12 +56,15 @@ def backtest_strategy(
         "market_value": [],
         "order": [],
         "exec_price": [],
+        "stop_loss": [],
         "fees": [],
         "trade_side": [],  # 'buy' or 'sell' or ''
         "pnl": []  # profit and loss from closed trades
     }
     # Build state to get order size from position sizer
     prev_equity = starting_capital
+    stop_loss = np.nan
+    stop_trade = False
     for date, row in data.iterrows():
         price = row['close']
         signal = signals.at[date, 'signal'] if date in signals.index else 0
@@ -87,9 +95,13 @@ def backtest_strategy(
         exec_px = np.nan
         fees_paid = 0
         trade_side = ''
-        
+      
+        # RISK MANAGEMENT - STOP-LOSS
+        if price < stop_loss:
+            stop_trade = True
+
         # BUY ORDER
-        if order > 0:
+        if order > 0 and not stop_trade:
             trade_side = "buy"
             buy_px = price * (1 + slippage)  # buying price including slippage for a buy order
             if fee_rate < 1.0:
@@ -121,9 +133,11 @@ def backtest_strategy(
             cash -= total_cost 
             exec_px = buy_px if qty > 0 else np.nan
             order = qty # actual filled
+            if signals.get('stop_loss') is not None:
+                stop_loss = signals.at[date, 'stop_loss'] if date in signals.index else np.nan
             
         # SELL ORDER
-        elif order < 0:
+        elif order < 0 or stop_trade is True:
             trade_side = "sell"
             sell_px = price * (1 - slippage)
             qty_requested = -order
@@ -143,6 +157,8 @@ def backtest_strategy(
             shares -= qty
             exec_px = sell_px if qty > 0 else np.nan
             order = -qty # actual filled (negative)
+            stop_loss = np.nan
+            stop_trade = False
             
         # Record bactest results
         equity = cash + shares * price
@@ -157,6 +173,7 @@ def backtest_strategy(
         out["market_value"].append(shares * price)
         out["order"].append(order)
         out["exec_price"].append(exec_px)
+        out["stop_loss"].append(stop_loss)
         out["fees"].append(fees_paid)
         out["trade_side"].append(trade_side if order != 0 else "")
         out["pnl"].append(pnl)
