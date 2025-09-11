@@ -13,6 +13,7 @@ import position_sizing as pos_sz
 import risk_control as risk
 import backtest_engine as engine
 import requests 
+import chartforgetk_wrappers as cftk_wrap
 
 # Global variables to store access token and API server URL
 access_token = ''
@@ -286,14 +287,31 @@ class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.candle_chart = CandlestickChart(self, width = 960, height = 540)
-        self.candle_chart.grid(row=0, column=0, columnspan=4, sticky="nsew")
+        self.show_label_var = tk.BooleanVar(value=False)  # OFF by default
+        self.show_label_toggle = ttk.Checkbutton(
+            self, 
+            text="Show data labels", 
+            variable=self.show_label_var, 
+            command=self.toggle_show_label, 
+            onvalue=True, 
+            offvalue=False
+        )
+        self.show_label_toggle.grid(row=0, column=0, sticky="nsew")
+        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 960, height = 540)
+        self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
         self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
         self.time_interval = "OneDay"
         self.timeframe_control = self.create_segmented_control(self.timeframe_options, self.on_timeframe_change)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
         
+    def toggle_show_label(self):
+        if self.show_label_var.get(): 
+            self.candle_chart.show_labels = True
+        else:
+            self.candle_chart.show_labels = False
+        self.candle_chart.redraw()
+            
     def convert_data_for_chart(self, df):
         # Ensure index is reset so we can enumerate
         df = df.reset_index(drop=True)
@@ -305,8 +323,8 @@ class CandlestickChartFrame(ttk.Frame):
     
     def update_chart(self, df):
         self.candle_chart.clear()
-        self.candle_chart.plot(self.convert_data_for_chart(df))       
-    
+        self.candle_chart.plot(self.convert_data_for_chart(df))
+               
     def create_segmented_control(self, options, command = None):
         self.sg_var = tk.StringVar(value=options[1])
         self.sg_command = command
@@ -322,13 +340,13 @@ class CandlestickChartFrame(ttk.Frame):
                 command=self._on_select,
                 style="Segmented.TRadiobutton"
             )
-            rb.grid(row=1,column=i, sticky="nsew")
+            rb.grid(row=2,column=i, sticky="nsew")
             self.columnconfigure(i, weight=1)
     
     def _on_select(self):
         if self.sg_command:
             self.sg_command(self.sg_var.get())
-            
+       
     def on_timeframe_change(self, value):
         self.time_interval = value
         trading_frame = self.controller.frames[TradingStrategyFrame]
