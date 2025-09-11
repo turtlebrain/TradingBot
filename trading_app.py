@@ -6,8 +6,6 @@ import json
 from tkcalendar import DateEntry
 import trading_strategies as strategies
 import pandas as pd
-from ChartForgeTK import CandlestickChart
-from ChartForgeTK import LineChart
 import tkinter.font as tkFont
 import position_sizing as pos_sz
 import risk_control as risk
@@ -366,7 +364,7 @@ class BackTestingResultsFrame(ttk.Frame):
         self.results_menu = ttk.OptionMenu(self, self.result_var, default_result, *col_headers)
         self.results_menu.grid(row=1, column=1, padx=2, pady=2)
         self.results_chart = ResultChartFrame(self, controller, pd.DataFrame(), self.result_var)
-        self.results_chart.grid(row=2, column=1, padx=5,pady=5, sticky="ns")
+        self.results_chart.grid(row=2, column=1, padx=5,pady=5, sticky="nsew")
         # Treeview
         self.backtest_display = ttk.Treeview(self, columns=col_headers, show="headings")
         for col in col_headers:
@@ -403,22 +401,41 @@ class ResultChartFrame(ttk.Frame):
     def __init__(self, parent, controller, backtest_results, result_var):
         super().__init__(parent)
         self.controller = controller
+        self.show_label = False
         self.results = backtest_results
         self.result_var = result_var
-        self.result_var.trace_add("write", self.update_chart)
-        self.update_chart()
+        self.result_var.trace_add("write", self.update_chart)    
+        self.create_chart(self.show_label)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
+    
+    def toggle_show_label(self):
         
+        if self.show_label_var.get():
+            self.show_label = True
+        else:
+            self.show_label = False
+        self.update_chart()
+              
     def reset_chart(self):
         # Remove any previous chart widget cleanly
         for child in self.winfo_children():
             child.destroy()
-        self.equity_chart = None
+        self.chart = None
     
-    def create_chart(self):
-        self.chart = LineChart(self, width=800, height=450)
-        self.chart.grid(row=0, column=1, sticky="nsew")
+    def create_chart(self, show_labels=False):
+        self.chart = cftk_wrap.LineChartNoLabels(self, width=800, show_labels=show_labels, height=450)
+        self.chart.grid(row=0, column=0, sticky="nsew")
+        self.show_label_var = tk.BooleanVar(value=show_labels)    #OFF by default
+        self.show_label_toggle = ttk.Checkbutton(
+            self,
+            text="Show data labels",
+            variable=self.show_label_var,
+            command=self.toggle_show_label,
+            onvalue=True,
+            offvalue=False
+        )
+        self.show_label_toggle.grid(row=1,column=0, sticky="nsew")
         return self.chart
     
     def update_chart(self, *args):
@@ -431,7 +448,7 @@ class ResultChartFrame(ttk.Frame):
                 if x_labels is not None:
                     x_labels = [str(lbl) for lbl in x_labels]
                     self.reset_chart()
-                    self.create_chart().plot(y_values, x_labels)
+                    self.create_chart(show_labels=self.show_label).plot(y_values, x_labels)
 
 #--- Collapsible frames for vertical tab controls ---
 class CollapsibleFrame(ttk.Frame):

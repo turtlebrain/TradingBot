@@ -1,4 +1,5 @@
 from ChartForgeTK import CandlestickChart
+from ChartForgeTK import LineChart
 
 class CandlestickChartNoLabels(CandlestickChart):
     def __init__(self, *args, show_labels=False, **kwargs):
@@ -6,7 +7,7 @@ class CandlestickChartNoLabels(CandlestickChart):
         self.show_labels = show_labels
 
     def _animate_candles(self):
-        """Draw candlesticks without high/low labels."""
+        """Added ability through show_labels to turn on/off high/low labels."""
         def ease(t):
             return t * t * (3 - 2 * t)
 
@@ -93,4 +94,103 @@ class CandlestickChartNoLabels(CandlestickChart):
                 self.canvas.after(20, update_animation, frame + 1, total_frames)
 
         total_frames = self.animation_duration // 20
+        update_animation(0, total_frames)
+        
+class LineChartNoLabels(LineChart):
+    def __init__(self, *args, show_labels=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.show_labels = show_labels
+
+    def _animate_lines(self, y_min: float, y_max: float):
+        """Added ability through show_labels to turn on/off labels."""
+
+        lines = {}
+        shadows = {}
+        dots = {}
+        labels = {}
+
+        for idx, dataset in enumerate(self.datasets):
+            if idx in self.points and len(self.points[idx]) >= 2:
+                lines[idx] = self.canvas.create_line(
+                    self.points[idx][0][0], self.points[idx][0][1], 
+                    self.points[idx][0][0], self.points[idx][0][1],
+                    fill=dataset['color'],
+                    width=self.line_width,
+                    tags=('line',)
+                )
+                shadows[idx] = self.canvas.create_line(
+                    self.points[idx][0][0], self.points[idx][0][1], 
+                    self.points[idx][0][0], self.points[idx][0][1],
+                    fill=self.style.create_shadow(dataset['color']),
+                    width=self.line_width + 2,
+                    tags=('shadow',)
+                )
+                dots[idx] = []
+                labels[idx] = []
+            elif idx in self.points and len(self.points[idx]) == 1:
+                x, y, data_idx = self.points[idx][0]
+                fill_color = self._clamp_color(self.style.adjust_brightness(dataset['color'], 1.2))
+                outline_color = self._clamp_color(self.style.adjust_brightness(dataset['color'], 0.8))
+                dot = self._create_shape(x, y, dataset['shape'], self.dot_radius, fill_color, outline_color)
+                if self.show_labels:
+                    label = self.canvas.create_text(
+                        x, y - 15, text=f"{dataset['data'][data_idx]:,.2f}",
+                        font=self.style.VALUE_FONT, fill=self.style.TEXT,
+                        anchor='s', tags=('label', f'point_{idx}_0')
+                    )
+                    dots[idx] = [dot]
+                    labels[idx] = [label]
+            else:
+                dots[idx] = []
+                labels[idx] = []
+
+        def ease(t):
+            return t * t * (3 - 2 * t)
+
+        def update_animation(frame: int, total_frames: int):
+            progress = ease(frame / total_frames)
+            
+            for idx, dataset in enumerate(self.datasets):
+                if idx not in lines:
+                    continue
+                current_points = []
+                for i in range(len(self.points[idx])):
+                    x0, y0, _ = self.points[idx][max(0, i-1)]
+                    x1, y1, _ = self.points[idx][i]
+                    if i == 0:
+                        current_points.extend([x1, y1])
+                    else:
+                        interp_x = x0 + (x1 - x0) * min(1.0, progress * len(self.points[idx]) / (i + 1))
+                        interp_y = y0 + (y1 - y0) * min(1.0, progress * len(self.points[idx]) / (i + 1))
+                        current_points.extend([interp_x, interp_y])
+                    
+                    if i < len(dots[idx]) and progress * len(self.points[idx]) >= i + 1:
+                        self.canvas.coords(dots[idx][i], x1 - self.dot_radius, y1 - self.dot_radius,
+                                           x1 + self.dot_radius, y1 + self.dot_radius)
+                        self.canvas.coords(labels[idx][i], x1, y1 - 15)
+                        self.canvas.itemconfig(dots[idx][i], state='normal')
+                        self.canvas.itemconfig(labels[idx][i], state='normal')
+
+                self.canvas.coords(shadows[idx], *current_points)
+                self.canvas.coords(lines[idx], *current_points)
+
+                if frame == total_frames:
+                    for i, (x, y, data_idx) in enumerate(self.points[idx]):
+                        if i >= len(dots[idx]):
+                            fill_color = self._clamp_color(self.style.adjust_brightness(dataset['color'], 1.2))
+                            outline_color = self._clamp_color(self.style.adjust_brightness(dataset['color'], 0.8))
+                            dot = self._create_shape(x, y, dataset['shape'], self.dot_radius, fill_color, outline_color)
+                            if self.show_labels:                           
+                                label = self.canvas.create_text(
+                                    x, y - 15, text=f"{dataset['data'][data_idx]:,.2f}",
+                                    font=self.style.VALUE_FONT, fill=self.style.TEXT,
+                                    anchor='s', tags=('label', f'point_{idx}_{i}')
+                                )
+                                dots[idx].append(dot)
+                                labels[idx].append(label)
+
+            if frame < total_frames:
+                self.canvas.after(16, update_animation, frame + 1, total_frames)
+
+        total_frames = self.animation_duration // 16
         update_animation(0, total_frames)
