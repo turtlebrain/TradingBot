@@ -254,13 +254,16 @@ class TradingStrategyFrame(ttk.Frame):
         sl_func = None
         if self.execution_tab.stop_loss_var.get():
             sl_func = risk.StopLoss.average_true_range_stop
-            
+        fixed_fraction = self.execution_tab.position_slider_value.get()
+        if not self.is_input_valid_float(fixed_fraction, "Fixed Fraction"):        
+            return
         try:
             backtest_results = engine.backtest_strategy(
                 data = candle_data, 
                 strategy_func = strategies_map[picked_strategy], 
                 strategy_param = strategy_params,
-                position_sizer = pos_sz.all_in_sizer,
+                position_sizer_func = pos_sz.fixed_fraction_position_sizer,
+                position_sizer_param = float(fixed_fraction),
                 stop_loss_func = sl_func,
                 starting_capital = float(initial_capital),
                 allow_short = False,
@@ -666,6 +669,19 @@ class ExecutionCollasibleFrame(CollapsibleFrame):
         self.lot_size_input.pack(fill="x", pady=2)
         self.stop_loss_var = tk.BooleanVar(value=False)  # OFF by default
         self.stop_loss_widgets = []  # will hold references to created widgets
+        self.position_slider_label = ttk.Label(self.content, text="Position Size")
+        self.position_slider_label.pack(anchor="w")
+        self.position_slider_value = tk.DoubleVar()
+        self.position_slider = ttk.Scale(
+            self.content, 
+            from_=0, 
+            to=1.0, 
+            orient="horizontal",
+            variable=self.position_slider_value
+        )
+        self.position_slider.pack(fill="x", pady=2)
+        # Set default to max
+        self.position_slider_value.set(self.position_slider.cget("to"))
 
         self.stop_loss_toggle = ttk.Checkbutton(
             self.content, 

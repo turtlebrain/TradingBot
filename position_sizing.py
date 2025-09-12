@@ -4,10 +4,10 @@ import pandas as pd
 
 # Position Sizing Methods
 
-def all_in_sizer(state) ->int:
+def fixed_fraction_position_sizer(state, fixed_fraction : float) ->int:
     """
-    Allocates all available capital to the trade when signal > 0
-    - if short_signal (signal < 0), it will sell all shares held if allow_short is True.
+    Allocates a fixed-fraction of the available capital to the trade when signal > 0
+    - if short_signal (signal < 0), it will sell a fixed-fraction of held if allow_short is True.
     - returned value can be positive (buy) or negative (sell)
     - if signal == 0, no action (return 0)
     Returns the absolute number of shares to trade.
@@ -29,7 +29,9 @@ def all_in_sizer(state) ->int:
         max_buyable = 0
     else:
         # Account for fee min: reserve cash for min fee then apply fee rate on remaining cash
-        spendable_cash = max(0, cash - fee_min)
+        fixed_fraction = max(0.0, min(1.0, fixed_fraction))
+        cash_allowed = fixed_fraction * cash
+        spendable_cash = max(0, cash_allowed - fee_min)
         max_buyable = math.floor(spendable_cash / (buy_exec_price * (1 + fee_rate)))
     if lot_size > 1:
         max_buyable= max_buyable - (max_buyable % lot_size )

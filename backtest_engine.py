@@ -8,7 +8,8 @@ def backtest_strategy(
     data :pd.DataFrame, 
     strategy_func, 
     strategy_param,
-    position_sizer, 
+    position_sizer_func, 
+    position_sizer_param,
     stop_loss_func,
     starting_capital=10000.0, 
     allow_short=False, 
@@ -22,7 +23,8 @@ def backtest_strategy(
     :param data: DataFrame with historical price data 
     :param strategy_func: Function that generates trading signals
     :param strategy_param: Strategy parameters being passed to strategy function
-    :param position_sizer: Function that determines position size based on state
+    :param position_sizer_func: Function that determines position size based on state
+    :param position_sizer_param: Position Sizer parameters being passed to position sizer function
     :param stop_loss_func: Function that determines the stop loss to manage risk
     :param initial_capital: Starting capital for backtest
     :param allow_short: Whether to allow short selling
@@ -82,7 +84,8 @@ def backtest_strategy(
             'lot_size': lot_size
         }
         # Get order size from position sizer
-        order = position_sizer(state)
+        fixed_fraction = float(position_sizer_param)
+        order = position_sizer_func(state, fixed_fraction)
         # Round to lot size
         if lot_size > 1 and order != 0:
             if order > 0:
@@ -98,7 +101,7 @@ def backtest_strategy(
         # RISK MANAGEMENT - STOP-LOSS
         if price < stop_loss:
             state['signal'] = -1
-            order = position_sizer(state)
+            order = position_sizer_func(state, fixed_fraction)
 
         # BUY ORDER
         if order > 0:
