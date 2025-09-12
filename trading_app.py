@@ -362,47 +362,58 @@ class BackTestingResultsFrame(ttk.Frame):
             'cum_max_equity', 'drawdown', 'returns'
         ]
 
-        # --- Sidebar + main result content container ---
+        # Track selected series for multi-line plotting
+        self.selected_series = []
+
+        # --- Layout config ---
         self.columnconfigure(0, weight=0)   # sidebar fixed width
-        self.columnconfigure(1, weight=1)   # result content expands
+        self.columnconfigure(1, weight=1)   # main area expands
         self.rowconfigure(0, weight=1)
 
-        # Sidebar
+        # --- Sidebar ---
         sidebar = tk.Frame(self, bg="#f0f0f0", width=200)
         sidebar.grid(row=0, column=0, sticky="ns")
-        sidebar.grid_propagate(False)  # keep fixed width
+        sidebar.grid_propagate(False)
 
-        # Chart controls
-        default_result = "equity"
-        self.result_var = tk.StringVar(value=default_result)
-        self.results_menu = ttk.OptionMenu(sidebar, self.result_var, default_result, *col_headers)
-        self.results_menu.grid(row=0, column=0, padx=2, pady=2, sticky="ns")
+        # Row 0: OptionMenu + Add button
+        self.result_var = tk.StringVar(value=col_headers[0])
+        opt_frame = tk.Frame(sidebar, bg="#f0f0f0")
+        opt_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
 
-        self.show_label_var = tk.BooleanVar(value=False)  # OFF by default
+        opt = ttk.OptionMenu(opt_frame, self.result_var, col_headers[4], *col_headers)
+        opt.pack(side="left", fill="x", expand=True)
+
+        add_btn = ttk.Button(opt_frame, text="+", width=3, command=self.add_series)
+        add_btn.pack(side="left", padx=(5, 0))
+
+        # Row 1: Selected series list
+        self.series_frame = tk.Frame(sidebar, bg="#f0f0f0")
+        self.series_frame.grid(row=1, column=0, sticky="ew", padx=5)
+
+        # Show labels toggle
+        self.show_label_var = tk.BooleanVar(value=False)
         self.show_label_toggle = ttk.Checkbutton(
-            sidebar,  
+            sidebar,
             text="Show data labels",
             variable=self.show_label_var,
-            command=self.toggle_show_label,
-            onvalue=True,
-            offvalue=False
+            command=self.toggle_show_label
         )
-        self.show_label_toggle.grid(row=1, column=0, padx=2, pady=2, sticky="ns")
+        self.show_label_toggle.grid(row=2, column=0, padx=5, pady=5, sticky="ew")
 
+        # Run new test button
         self.run_new_test_button = ttk.Button(sidebar, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=2, column=0, padx=2, pady=2, sticky="ns")
+        self.run_new_test_button.grid(row=3, column=0, padx=5, pady=5, sticky="ew")
 
-        # Main area containing charts and result tree view
+        # --- Main area ---
         main_area = tk.Frame(self, bg="white")
         main_area.grid(row=0, column=1, sticky="nsew")
         main_area.grid_columnconfigure(0, weight=1)
-        main_area.grid_rowconfigure(1, weight=1)  # Treeview expands
+        main_area.grid_rowconfigure(1, weight=1)
 
-        # Title label 
         title_label = tk.Label(main_area, text="Backtesting Chart Area", bg="white", font=("Arial", 14))
         title_label.grid(row=0, column=0, columnspan=2, pady=2)
 
-        # Result Chart Area
+        # Chart area
         self.results_chart = ResultChartFrame(main_area, controller, pd.DataFrame(), self.result_var)
         self.results_chart.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
 
@@ -426,6 +437,35 @@ class BackTestingResultsFrame(ttk.Frame):
         self.grid_columnconfigure(1, weight=1)
 
         self.controller.add_outer_rows_and_cols(main_area)
+
+    # --- Series management ---
+    def add_series(self):
+        series = self.result_var.get()
+        if series not in self.selected_series:
+            self.selected_series.append(series)
+            self.refresh_series_list()
+            self.results_chart.update_chart()
+
+    def remove_series(self, series):
+        if series in self.selected_series:
+            self.selected_series.remove(series)
+            self.refresh_series_list()
+            self.results_chart.update_chart()
+
+    def refresh_series_list(self):
+        for widget in self.series_frame.winfo_children():
+            widget.destroy()
+
+        for s in self.selected_series:
+            row = tk.Frame(self.series_frame, bg="#f0f0f0")
+            row.pack(fill="x", pady=1)
+
+            lbl = tk.Label(row, text=s, anchor="w", bg="#f0f0f0")
+            lbl.pack(side="left", fill="x", expand=True)
+
+            rm_btn = ttk.Button(row, text="❌", width=2,
+                                command=lambda name=s: self.remove_series(name))
+            rm_btn.pack(side="right")
 
     
     def toggle_show_label(self):  
@@ -468,16 +508,37 @@ class ResultChartFrame(ttk.Frame):
         return self.chart
     
     def update_chart(self, *args):
-        if not self.results.empty:
-            selected = self.result_var.get()
-            x_labels = self.results.index.tolist()
+        if self.results.empty:
+            return
+
+        selected = self.result_var.get()
+        x_labels = [str(lbl) for lbl in self.results.index.tolist()]
+
+        # Always reset chart before plotting
+        self.reset_chart()
+        chart = self.create_chart(show_labels=self.show_label)
+
+        series_list = self.controller.frames[BackTestingResultsFrame].selected_series
+
+        if series_list:
+            datasets = []
+            for series in series_list:
+                if series in self.results.columns:
+                    y_values = pd.to_numeric(self.results[series], errors="coerce").dropna().tolist()
+                    if y_values:
+                        datasets.append({
+                            'data': y_values,
+                            'label': series
+                        })
+
+            if datasets:
+                chart.plot(datasets)  # ChartForgeTK will handle multi-series mode
+        else:
             y_values = pd.to_numeric(self.results[selected], errors="coerce").dropna().tolist()
             if y_values:
-            # Ensure labels are strings if provided
-                if x_labels is not None:
-                    x_labels = [str(lbl) for lbl in x_labels]
-                    self.reset_chart()
-                    self.create_chart(show_labels=self.show_label).plot(y_values, x_labels)
+                chart.plot(y_values)  # single series mode
+
+                    
 
 #--- Collapsible frames for vertical tab controls ---
 class CollapsibleFrame(ttk.Frame):
