@@ -617,6 +617,19 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             self.distance_entry = ttk.Entry(self.content)
             self.distance_entry.pack(fill="x", pady=2)
             self.distance_entry.insert(0, 5)
+        elif selected == "Relative Strength Index":
+            ttk.Label(self.content, text="Lookback Period:").pack(anchor="w")
+            self.lookback_entry = ttk.Entry(self.content)
+            self.lookback_entry.pack(fill="x", pady=2)
+            self.lookback_entry.insert(0, 14)
+            ttk.Label(self.content, text ="Overbought Threshold:").pack(anchor="w")
+            self.overbought_entry = ttk.Entry(self.content)
+            self.overbought_entry.pack(fill="x", pady=2)
+            self.overbought_entry.insert(0, 70)
+            ttk.Label(self.content, text ="Oversold Threshold:").pack(anchor="w")
+            self.oversold_entry = ttk.Entry(self.content)
+            self.oversold_entry.pack(fill="x", pady = 2)
+            self.oversold_entry.insert(0, 30)
         else:
             ttk.Label(self.content, text=f"{selected} \n is not implemented yet").pack(anchor="w")
     
@@ -631,7 +644,13 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             }
         elif selected == "Support and Resistance Structure":
             strategy_params = { 
-                "distance"   :   self.distance_entry.get().strip(),
+                "distance"   :   self.distance_entry.get().strip()
+            }
+        elif selected == "Relative Strength Index":
+            strategy_params = {
+                "lookback" : self.lookback_entry.get().strip(),
+                "overbought" : self.overbought_entry.get().strip(),
+                "oversold" : self.oversold_entry.get().strip()
             }
         else:
             raise ValueError("No parameters available for this selected strategy")

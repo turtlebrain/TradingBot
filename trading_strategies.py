@@ -46,6 +46,52 @@ class TradingStrategy:
         # TO-DO
         return 0
     
+    def relative_strength_index(data, params):
+        """
+        Compute RSI-based trading signals.
+    
+        Parameters:
+            params['lookback']  : int, RSI lookback period (default 14).
+            params['overbought'] : float, RSI threshold above which we consider the market overbought (default 70).
+            params['oversold'] : float, RSI threshold below which we consider the market oversold (default 30).
+    
+        Returns:
+            pd.DataFrame : Original DataFrame with added 'rsi' and 'signal' columns.
+        """
+        signals = pd.DataFrame(index=data.index)
+        signals['price'] = data['close']
+        signals['high'] = data['high']
+        signals['low'] = data['low']
+        lookback = int(params['lookback'])
+        overbought = float(params['overbought'])
+        oversold = float(params['oversold'])
+        # Calculate gains (+positive price change), and losses (-negative price change)
+        delta = signals['price'].diff()
+        gain = np.where(delta > 0, delta, 0)
+        loss = np.where(delta < 0, -delta, 0)
+        # Calculate rolling averages (Wilder's smoothing)
+        avg_gain = pd.Series(gain).rolling(window=lookback, min_periods = lookback).mean()
+        avg_loss = pd.Series(loss).rolling(window=lookback, min_periods = lookback).mean()
+        
+        for i in range(lookback, len(signals)):
+            avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (lookback - 1) + gain[i]) / lookback
+            avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (lookback - 1) + loss[i]) / lookback
+        
+        # Calculate RS and RSI
+        rs = avg_gain / avg_loss   
+        rsi = 100 - (100 / (1 + rs))
+        signals['rsi']= rsi
+        
+        signals['signal'] = 0
+        # Buy signal: RSI crosses above oversold
+        signals.loc[(signals['rsi'] > oversold) & (signals['rsi'].shift(1) <= oversold), 'signal'] = 1
+        # Sell signal: RSI crosses below overbought
+        signals.loc[(signals['rsi'] < overbought) & (signals['rsi'].shift(1)) >= overbought, 'signal'] = -1
+        
+        signals['positions'] = signals['signal'].diff().fillna(0)
+
+        return signals
+    
     def support_resistace_structure(data, params):
         """
         Implements a simple Peak/Valley Detection to find Support and Resistance Levels
@@ -89,4 +135,5 @@ class TradingStrategy:
         "Double Moving Average Crossover" : double_moving_average_crossover,
         "Exponential Moving Average Breakout" : exponential_moving_average_breakout,
         "Support and Resistance Structure" : support_resistace_structure,
+        "Relative Strength Index" : relative_strength_index
     }
