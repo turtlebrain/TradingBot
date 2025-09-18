@@ -97,7 +97,7 @@ class CandlestickChartNoLabels(CandlestickChart):
         update_animation(0, total_frames)
         
 class LineChartNoLabels(LineChart):
-    def __init__(self, *args, show_labels=True, **kwargs):
+    def __init__(self, *args, show_labels=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.show_labels = show_labels
 
@@ -131,8 +131,8 @@ class LineChartNoLabels(LineChart):
                 x, y, data_idx = self.points[idx][0]
                 fill_color = self._clamp_color(self.style.adjust_brightness(dataset['color'], 1.2))
                 outline_color = self._clamp_color(self.style.adjust_brightness(dataset['color'], 0.8))
-                dot = self._create_shape(x, y, dataset['shape'], self.dot_radius, fill_color, outline_color)
                 if self.show_labels:
+                    dot = self._create_shape(x, y, dataset['shape'], self.dot_radius, fill_color, outline_color)
                     label = self.canvas.create_text(
                         x, y - 15, text=f"{dataset['data'][data_idx]:,.2f}",
                         font=self.style.VALUE_FONT, fill=self.style.TEXT,
@@ -179,8 +179,8 @@ class LineChartNoLabels(LineChart):
                         if i >= len(dots[idx]):
                             fill_color = self._clamp_color(self.style.adjust_brightness(dataset['color'], 1.2))
                             outline_color = self._clamp_color(self.style.adjust_brightness(dataset['color'], 0.8))
-                            dot = self._create_shape(x, y, dataset['shape'], self.dot_radius, fill_color, outline_color)
-                            if self.show_labels:                           
+                            if self.show_labels: 
+                                dot = self._create_shape(x, y, dataset['shape'], self.dot_radius, fill_color, outline_color)                          
                                 label = self.canvas.create_text(
                                     x, y - 15, text=f"{dataset['data'][data_idx]:,.2f}",
                                     font=self.style.VALUE_FONT, fill=self.style.TEXT,
