@@ -630,6 +630,15 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             self.oversold_entry = ttk.Entry(self.content)
             self.oversold_entry.pack(fill="x", pady = 2)
             self.oversold_entry.insert(0, 30)
+        elif selected == "Exponential Moving Average Breakout":
+            ttk.Label(self.content, text="Short Window:").pack(anchor="w")
+            self.short_ema_entry = ttk.Entry(self.content)
+            self.short_ema_entry.pack(fill="x", pady=2)
+            self.short_ema_entry.insert(0, 20)
+            ttk.Label(self.content, text="Long Window:").pack(anchor="w")
+            self.long_ema_entry = ttk.Entry(self.content)
+            self.long_ema_entry.pack(fill="x", pady=2)
+            self.long_ema_entry.insert(0, 50)
         else:
             ttk.Label(self.content, text=f"{selected} \n is not implemented yet").pack(anchor="w")
     
@@ -651,6 +660,11 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 "lookback" : self.lookback_entry.get().strip(),
                 "overbought" : self.overbought_entry.get().strip(),
                 "oversold" : self.oversold_entry.get().strip()
+            }
+        elif selected == "Exponential Moving Average Breakout":
+            strategy_params = { 
+                "short_window"   :   self.short_ema_entry.get().strip(),
+                "long_window"    :   self.long_ema_entry.get().strip()
             }
         else:
             raise ValueError("No parameters available for this selected strategy")
