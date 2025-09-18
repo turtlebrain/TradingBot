@@ -11,8 +11,8 @@ class TradingStrategy:
         Implements a Double Moving Average (MA) Crossover trading strategy.
 
         Parameters:
-            params['short_window'] short_window (int): The window size for the short-term moving average.
-            params['long_window'] long_window (int): The window size for the long-term moving average.
+            params['short_window'] short_window (int): The window size for the short-term moving average (default 20).
+            params['long_window'] long_window (int): The window size for the long-term moving average (default 50).
 
         Returns:
             pd.DataFrame: DataFrame containing the price, short and long moving averages,
@@ -42,9 +42,42 @@ class TradingStrategy:
         return signals
     
     # More reactive to price changes
-    def exponential_moving_average_breakout(data):
-        # TO-DO
-        return 0
+    def exponential_moving_average_breakout(data, params):
+        """
+        Implements an Exponential Moving Average (EMA) breakout strategy
+
+        Parameters:
+            params['short_window'] short_window (int): The window size for the short-term moving average.
+            params['long_window'] long_window (int): The window size for the long-term moving average.
+
+        Returns:
+            pd.DataFrame: DataFrame containing the price, short and long moving averages,
+                          trading signals (1 for buy, -1 for sell, 0 for hold), and position changes.
+        
+        Strategy Logic:
+            Generates a buy signal (1) when the short-term EMA crosses above the long-term EMA, 
+            Generates a sell signal (-1) when the short-term EMA crosses below the long-term EMA
+            Otherwise return a flat signal (0) if the short-term EMA = long-term EMA
+        """
+        short_window = int(params['short_window'])
+        long_window = int(params['long_window'])
+        signals = pd.DataFrame(index=data.index)
+        signals['price'] = data['close']
+        signals['high'] = data['high']
+        signals['low'] = data['low']
+        # Calculate EMAs using .ewm() (Exponential Weighted Moving average) 
+        # adjust = False ensures the EMA calculation uses a recursive formula(common in trading)
+        signals['EMA_short'] = data['close'].ewm(span=short_window, adjust=False).mean()
+        signals['EMA_long'] = data['close'].ewm(span=long_window, adjust=False).mean()
+        
+        signals['signal'] = np.where(
+            signals['EMA_short'] > signals['EMA_long'],  1,
+            np.where(signals['EMA_short'] < signals['EMA_long'], -1, 0)
+        )
+        
+        signals['positions'] = signals['signal'].diff().fillna(0)
+        
+        return signals
     
     def relative_strength_index(data, params):
         """
