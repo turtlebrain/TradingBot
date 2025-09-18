@@ -225,7 +225,14 @@ class TradingStrategyFrame(ttk.Frame):
             self.chat_output.config(state=tk.DISABLED)
             return False
             
-        
+    def get_result_summary(self, results):
+        result_summary = {}
+        if not results.empty:
+            initial_equity = results['equity'].iloc[0]
+            result_summary['final_equity'] = round(results['equity'].iloc[-1], 2)
+            result_summary['profits'] = round(result_summary['final_equity'] - initial_equity, 2)
+            result_summary['returns'] = round((result_summary['profits'] / initial_equity) * 100, 2)
+        return result_summary
     
     def run_backtest(self):
         picked_strategy = self.strategy_var.get()
@@ -275,7 +282,8 @@ class TradingStrategyFrame(ttk.Frame):
             if not backtest_results.empty:
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
                 backtest_frame.populate_backtest_display(backtest_results)
-                backtest_frame.results_chart.results = backtest_results         
+                backtest_frame.results_chart.results = backtest_results      
+                backtest_frame.populate_result_text(self.get_result_summary(backtest_results))   
                 backtest_frame.results_chart.update_chart() 
             self.controller.show_frame(BackTestingResultsFrame)
         except ValueError as err:
@@ -381,7 +389,7 @@ class BackTestingResultsFrame(ttk.Frame):
         # Row 0: OptionMenu + Add button
         self.result_var = tk.StringVar(value=col_headers[0])
         opt_frame = tk.Frame(sidebar, bg="#f0f0f0")
-        opt_frame.grid(row=0, column=0, sticky="ew", padx=5, pady=5)
+        opt_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
 
         opt = ttk.OptionMenu(opt_frame, self.result_var, col_headers[4], *col_headers)
         opt.pack(side="left", fill="x", expand=True)
@@ -391,7 +399,7 @@ class BackTestingResultsFrame(ttk.Frame):
 
         # Row 1: Selected series list
         self.series_frame = tk.Frame(sidebar, bg="#f0f0f0")
-        self.series_frame.grid(row=1, column=0, sticky="ew", padx=5)
+        self.series_frame.grid(row=1, column=0, sticky="ns", padx=5)
 
         # Show labels toggle
         self.show_label_var = tk.BooleanVar(value=False)
@@ -401,12 +409,22 @@ class BackTestingResultsFrame(ttk.Frame):
             variable=self.show_label_var,
             command=self.toggle_show_label
         )
-        self.show_label_toggle.grid(row=2, column=0, padx=5, pady=5, sticky="ew")
+        self.show_label_toggle.grid(row=2, column=0, padx=5, pady=5, sticky="ns")
 
+        # Result summary (Net Profit, Final Equity, %return)
+        self.result_summary = tk.Label(sidebar, text ="")
+        self.result_summary.grid(row = 3, column = 0, sticky="ns")
+        results_summary = { 
+            "final_equity"  :   0,
+            "profits"       :   0,
+            "returns"       :   0
+        }
+        self.result_summary_var =  self.populate_result_text(results_summary)
+        
         # Run new test button
         self.run_new_test_button = ttk.Button(sidebar, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=3, column=0, padx=5, pady=5, sticky="ew")
-
+        self.run_new_test_button.grid(row=4, column=0, padx=5, pady=5, sticky="ns")
+        
         # --- Main area ---
         main_area = tk.Frame(self, bg="white")
         main_area.grid(row=0, column=1, sticky="nsew")
@@ -483,7 +501,10 @@ class BackTestingResultsFrame(ttk.Frame):
             self.backtest_display.delete(row)
         for _, row in dataframe.iterrows():
             self.backtest_display.insert("", "end", values=list(row))
-        
+    
+    def populate_result_text(self, results):
+        self.result_summary.config(text= f"Final Equity ($): {results['final_equity']}\n Proits ($): {results['profits']} \n Returns (%): {results['returns']}")   
+       
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
 
