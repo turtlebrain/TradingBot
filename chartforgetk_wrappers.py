@@ -1,10 +1,43 @@
 from ChartForgeTK import CandlestickChart
 from ChartForgeTK import LineChart
+from typing import List, Tuple
 
 class CandlestickChartNoLabels(CandlestickChart):
     def __init__(self, *args, show_labels=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.show_labels = show_labels
+
+    def plot(self, data: List[Tuple[float, float, float, float, float]], title: str = "Candlestick Chart"):
+        """Plot an improved candlestick chart with (index, open, high, low, close) data"""
+        if not data:
+            raise ValueError("Data cannot be empty")
+        if not all(isinstance(d, tuple) and len(d) == 5 and 
+                  all(isinstance(v, (int, float)) for v in d) for d in data):
+            raise TypeError("Data must be a list of (index, open, high, low, close) number tuples")
+            
+        self.data = sorted(data, key=lambda x: x[0])  # Sort by index
+        
+        # Calculate ranges
+        indices, opens, highs, lows, closes = zip(*self.data)
+        self.x_min, self.x_max = min(indices), max(indices)
+        self.y_min, self.y_max = min(lows), max(highs)
+        x_padding = (self.x_max - self.x_min) * 0.1 or 1
+        y_padding = (self.y_max - self.y_min) * 0.1 or 1
+        self.x_min -= x_padding
+        self.x_max += x_padding
+        self.y_min -= y_padding
+        self.y_max += y_padding
+        
+        self.title = title
+        self.x_label = "Time/Index"
+        self.y_label = "Price"
+        
+        self.canvas.delete('all')
+        self.elements.clear()
+        
+        self._draw_axes(self.x_min, self.x_max, self.y_min, self.y_max)
+        self._animate_candles()
+        self._add_interactive_effects()
 
     def _animate_candles(self):
         """Added ability through show_labels to turn on/off high/low labels."""

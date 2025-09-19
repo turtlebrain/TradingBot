@@ -284,6 +284,7 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.populate_backtest_display(backtest_results)
                 backtest_frame.results_chart.results = backtest_results      
                 backtest_frame.populate_result_text(self.get_result_summary(backtest_results))   
+                backtest_frame.title_label.configure(text=f"{picked_strategy}")
                 backtest_frame.results_chart.update_chart() 
             self.controller.show_frame(BackTestingResultsFrame)
         except ValueError as err:
@@ -332,7 +333,8 @@ class CandlestickChartFrame(ttk.Frame):
     
     def update_chart(self, df):
         self.candle_chart.clear()
-        self.candle_chart.plot(self.convert_data_for_chart(df))
+        self.candle_chart.plot(self.convert_data_for_chart(df), 
+                               self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip())
                
     def create_segmented_control(self, options, command = None):
         self.sg_var = tk.StringVar(value=options[1])
@@ -430,9 +432,10 @@ class BackTestingResultsFrame(ttk.Frame):
         main_area.grid(row=0, column=1, sticky="nsew")
         main_area.grid_columnconfigure(0, weight=1)
         main_area.grid_rowconfigure(1, weight=1)
-
-        title_label = tk.Label(main_area, text="Backtesting Chart Area", bg="white", font=("Arial", 14))
-        title_label.grid(row=0, column=0, columnspan=2, pady=2)
+        
+        tested_strategy = self.controller.frames[TradingStrategyFrame].strategy_var.get()
+        self.title_label = tk.Label(main_area, text=f"{tested_strategy}", bg="white", font=("Arial", 14))
+        self.title_label.grid(row=0, column=0, columnspan=2, pady=2)
 
         # Chart area
         self.results_chart = ResultChartFrame(main_area, controller, pd.DataFrame(), self.result_var)
@@ -536,7 +539,6 @@ class ResultChartFrame(ttk.Frame):
             return
 
         selected = self.result_var.get()
-        x_labels = [str(lbl) for lbl in self.results.index.tolist()]
 
         # Always reset chart before plotting
         self.reset_chart()
