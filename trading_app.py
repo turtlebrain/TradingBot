@@ -3,7 +3,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import api_requests as qt_api
 import json
-from tkcalendar import DateEntry
+import ttkbootstrap as ttkb
+from ttkbootstrap.widgets import DateEntry
 import trading_strategies as strategies
 import pandas as pd
 import tkinter.font as tkFont
@@ -15,6 +16,7 @@ import chartforgetk_wrappers as cftk_wrap
 import time
 import datetime
 import threading
+
 
 class TradingBotApp:
     
@@ -631,12 +633,14 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
         
         self.start_date_label = ttk.Label(self.content, text="Start Date:")
         self.start_date_label.pack(anchor="w")
-        self.start_date_input = DateEntry(self.content, year=2025, month=8, day=1)
+        self.start_date_input = DateEntry(self.content, bootstyle="success")
+        self.start_date_input.set_date(datetime.date(2025, 8, 1))
         self.start_date_input.pack(fill="x",pady=2)
         
         self.end_date_label = ttk.Label(self.content, text="End Date:")
         self.end_date_label.pack(anchor="w")
-        self.end_date_input = DateEntry(self.content, year=2025, month=8, day=31)
+        self.end_date_input = DateEntry(self.content, bootstyle="success")
+        self.end_date_input.set_date(datetime.date(2025, 8, 31))
         self.end_date_input.pack(fill="x", pady=2)
         
         trading_strategy = strategies.TradingStrategy
