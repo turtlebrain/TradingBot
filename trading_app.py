@@ -12,10 +12,9 @@ import risk_control as risk
 import backtest_engine as engine
 import requests 
 import chartforgetk_wrappers as cftk_wrap
-
-# Global variables to store access token and API server URL
-access_token = ''
-api_server = ''
+import time
+import datetime
+import threading
 
 class TradingBotApp:
     
@@ -93,6 +92,12 @@ class AuthFrame(ttk.Frame):
         self.auth_button = ttk.Button(self, text="Authenticate", width=50, command=self.authenticate)
         self.auth_button.grid(row=2, column=1, columnspan=2, padx=2, pady=2)
         self.controller.add_outer_rows_and_cols(self)
+        self.refresh_token = None
+        self.access_token = None
+        self.api_server = None
+        self.expiry_time = None
+        self.thread = None
+        self.lock = threading.Lock()
         
     def authenticate(self):
         code = self.code_entry.get().strip()
@@ -101,12 +106,42 @@ class AuthFrame(ttk.Frame):
             return
         token_data = qt_api.exchange_code_for_tokens(code)
         messagebox.showinfo("Tokens", f"Received tokens: {json.dumps(token_data, indent=2)}")
-        global access_token, api_server
-        api_server = token_data.get('api_server', '')   
-        access_token = token_data.get('access_token', '')
-        if api_server and access_token:
+        self.api_server = token_data.get('api_server', '')   
+        self.access_token = token_data.get('access_token', '')
+        self.refresh_token = token_data.get('refresh_token', '')
+        self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=token_data.get('expires_in', 0))
+        if self.api_server and self.access_token:
+            # Start background thread for auto-refresh
+            self.thread = threading.Thread(target=self.auto_refresh_tokens, daemon=True)
+            self.thread.start()
             self.controller.frames[TradingStrategyFrame].search(show_output=True)
         self.controller.show_frame(TradingStrategyFrame)
+        
+    def auto_refresh_tokens(self):
+        while True:
+            with self.lock:
+                if self.expiry_time:
+                    # Refresh 2 minutes before expiry
+                    time_to_wait = max(0,(self.expiry_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() - 120)
+                else:
+                    time_to_wait = 60 # Default wait time if expiry unknown
+            
+            time.sleep(time_to_wait)
+            chat_output = self.controller.frames[TradingStrategyFrame].chat_output
+            try:
+                refresh_token_data = qt_api.refresh_access_token(self.refresh_token)
+                self.api_server = refresh_token_data.get('api_server', '')   
+                self.access_token = refresh_token_data.get('access_token', '')
+                self.refresh_token = refresh_token_data.get('refresh_token', '')     
+                self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=refresh_token_data.get('expires_in', 0))
+                chat_output.config(state=tk.NORMAL)
+                chat_output.insert(tk.END, "Access token refreshed successfully.\n")
+                chat_output.config(state=tk.DISABLED)
+            except Exception as e:
+                chat_output.config(state=tk.NORMAL)
+                chat_output.insert(tk.END, f"Failed to refresh token: {e}\n")
+                chat_output.config(state=tk.DISABLED)
+                time.sleep(30)  # Wait a short delay before retrying
 
 class TradingStrategyFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -178,9 +213,8 @@ class TradingStrategyFrame(ttk.Frame):
         self.chat_output.config(state=tk.NORMAL)
         self.chat_output.insert(tk.END, f"Searching for: {stock_symbol}\n")
         # API Search
-        global access_token, api_server
-        my_access_token = access_token
-        my_api_server = api_server  
+        my_access_token = self.controller.frames[AuthFrame].access_token
+        my_api_server = self.controller.frames[AuthFrame].api_server  
         if not my_access_token and not my_api_server:
             self.chat_output.insert(tk.END, "No access token found, please log in and authenticate first.\n")
             self.chat_output.config(state=tk.DISABLED)
@@ -506,7 +540,7 @@ class BackTestingResultsFrame(ttk.Frame):
             self.backtest_display.insert("", "end", values=list(row))
     
     def populate_result_text(self, results):
-        self.result_summary.config(text= f"Final Equity ($): {results['final_equity']}\n Proits ($): {results['profits']} \n Returns (%): {results['returns']}")   
+        self.result_summary.config(text= f"Final Equity ($): {results['final_equity']}\n Profits ($): {results['profits']} \n Returns (%): {results['returns']}")   
        
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)

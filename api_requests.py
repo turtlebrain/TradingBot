@@ -117,3 +117,16 @@ def get_headers(access_token):
     return {
         'Authorization': f'Bearer {access_token}'
     }
+
+def refresh_access_token(refresh_token):
+    """
+    Uses the refresh token to obtain a new access token.
+    """
+    params = {
+        "client_id":     CLIENT_ID,
+        "grant_type":    "refresh_token",
+        "refresh_token": refresh_token,
+    }
+    resp = requests.get(TOKEN_BASE_URL, params=params)
+    resp.raise_for_status()
+    return resp.json()
