@@ -274,7 +274,11 @@ class TradingStrategyFrame(ttk.Frame):
     def run_backtest(self):
         picked_strategy = self.strategy_var.get()
         strategies_map = strategies.TradingStrategy.trading_strategies
-        candle_data = self.search(show_output=False)
+        candle_data = {}
+        if not self.chart_frame.live_switch_var.get():
+            candle_data = self.search(show_output=False)
+        else:
+            candle_data = self.chart_frame.streamer.candle_aggregator.get_candles()
         if isinstance(candle_data, list):
             candle_data = pd.DataFrame(candle_data)  
             
