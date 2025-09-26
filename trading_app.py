@@ -16,6 +16,7 @@ import chartforgetk_wrappers as cftk_wrap
 import time
 import datetime
 import threading
+import questrade_streamer as qt_stream
 
 
 class TradingBotApp:
@@ -247,7 +248,7 @@ class TradingStrategyFrame(ttk.Frame):
         except requests.exceptions.HTTPError as err:
             self.chat_output.config(state=tk.NORMAL)
             self.chat_output.delete(1.0, tk.END)
-            self.chat_output.insert(tk.END, f"HTTEP error occurered {err}.\n")
+            self.chat_output.insert(tk.END, f"HTTP error occurered {err}.\n")
             self.chat_output.config(state=tk.DISABLED)                 
     
     def is_input_valid_float(self, input, name):
@@ -333,6 +334,16 @@ class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
+        self.streamer = None
+        self.live_switch_var = tk.BooleanVar(value=False)  # OFF by default
+        self.live_switch = ttkb.Checkbutton(
+            self, 
+            text="Live mode", 
+            variable=self.live_switch_var, 
+            command=self.toggle_live_mode, 
+            bootstyle="success-round-toggle"
+        )
+        self.live_switch.grid(row=0, column=0, sticky="nsew")
         self.show_label_var = tk.BooleanVar(value=False)  # OFF by default
         self.show_label_toggle = ttk.Checkbutton(
             self, 
@@ -342,7 +353,7 @@ class CandlestickChartFrame(ttk.Frame):
             onvalue=True, 
             offvalue=False
         )
-        self.show_label_toggle.grid(row=0, column=0, sticky="nsew")
+        self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
         self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 960, height = 540)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
         self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
@@ -350,6 +361,22 @@ class CandlestickChartFrame(ttk.Frame):
         self.timeframe_control = self.create_segmented_control(self.timeframe_options, self.on_timeframe_change)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
+    
+    def toggle_live_mode(self):
+        self.streamer = qt_stream.QuestradeStreamer(
+            access_token = self.controller.frames[AuthFrame].access_token,
+            api_server = self.controller.frames[AuthFrame].api_server
+        )
+        if self.live_switch_var.get(): 
+            symbol_data = qt_api.get_stock_data(
+                access_token=self.controller.frames[AuthFrame].access_token,
+                api_server=self.controller.frames[AuthFrame].api_server, 
+                symbol_str=self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
+            )
+            symbol_id = symbol_data[0]['symbolId']
+            self.streamer.start_stream(symbol_id)
+        else:
+            self.streamer.stop_stream()
         
     def toggle_show_label(self):
         if self.show_label_var.get(): 
