@@ -375,6 +375,7 @@ class CandlestickChartFrame(ttk.Frame):
             )
             symbol_id = symbol_data[0]['symbolId']
             self.streamer.start_stream(symbol_id)
+            self.periodically_update_chart()
         else:
             self.streamer.stop_stream()
         
@@ -398,6 +399,12 @@ class CandlestickChartFrame(ttk.Frame):
         self.candle_chart.clear()
         self.candle_chart.plot(self.convert_data_for_chart(df), 
                                self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip())
+        
+    def periodically_update_chart(self):
+        candles_df = self.streamer.candle_aggregator.get_candles()
+        if not candles_df.empty and self.live_switch_var.get():
+            self.update_chart(candles_df)
+        root.after(30000, self.periodically_update_chart)  # Update every 30 seconds     
                
     def create_segmented_control(self, options, command = None):
         self.sg_var = tk.StringVar(value=options[1])

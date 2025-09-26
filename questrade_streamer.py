@@ -3,6 +3,8 @@ import json
 import threading
 import requests
 from urllib.parse import urlparse
+import tick_processor
+import datetime
 
 class QuestradeStreamer:
     def __init__(self, access_token, api_server):
@@ -11,6 +13,7 @@ class QuestradeStreamer:
         self.ws = None
         self.thread = None
         self.connected = False
+        self.candle_aggregator = tick_processor.CandleAggregator(interval_seconds=60)  # 1-minute candles
         
     def _on_open(self, ws):
         print("WebSocket connection opened.")
@@ -18,8 +21,18 @@ class QuestradeStreamer:
         ws.send(self.access_token)
         
     def _on_message(self, ws, message):
-        print("Received message:", message)
-    
+        data = json.loads(message)
+        if "quotes" in data:
+            for q in data["quotes"]:
+                ts = datetime.datetime.fromisoformat(q["lastTradeTime"].replace("Z", "+00:00"))
+                ts = ts.astimezone(datetime.timezone.utc)  # normalize to UTC
+                tick = {
+                    "price": q["lastTradePrice"],
+                    "volume": q.get("lastTradeSize", 0),
+                    "timestamp": ts
+                }
+                self.candle_aggregator.update(tick)
+
     def _on_error(self, ws, error):
         print("WebSocket error:", error)
     
