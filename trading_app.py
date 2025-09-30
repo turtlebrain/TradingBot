@@ -3,7 +3,8 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import api_requests as qt_api
 import json
-from tkcalendar import DateEntry
+import ttkbootstrap as ttkb
+from ttkbootstrap.widgets import DateEntry
 import trading_strategies as strategies
 import pandas as pd
 import tkinter.font as tkFont
@@ -12,10 +13,11 @@ import risk_control as risk
 import backtest_engine as engine
 import requests 
 import chartforgetk_wrappers as cftk_wrap
+import time
+import datetime
+import threading
+import tick_streamer as qt_stream
 
-# Global variables to store access token and API server URL
-access_token = ''
-api_server = ''
 
 class TradingBotApp:
     
@@ -93,6 +95,13 @@ class AuthFrame(ttk.Frame):
         self.auth_button = ttk.Button(self, text="Authenticate", width=50, command=self.authenticate)
         self.auth_button.grid(row=2, column=1, columnspan=2, padx=2, pady=2)
         self.controller.add_outer_rows_and_cols(self)
+        self.refresh_token = None
+        self.access_token = None
+        self.api_server = None
+        self.expiry_time = None
+        self.streamer = None
+        self.thread = None
+        self.lock = threading.Lock()
         
     def authenticate(self):
         code = self.code_entry.get().strip()
@@ -101,12 +110,56 @@ class AuthFrame(ttk.Frame):
             return
         token_data = qt_api.exchange_code_for_tokens(code)
         messagebox.showinfo("Tokens", f"Received tokens: {json.dumps(token_data, indent=2)}")
-        global access_token, api_server
-        api_server = token_data.get('api_server', '')   
-        access_token = token_data.get('access_token', '')
-        if api_server and access_token:
+        self.api_server = token_data.get('api_server', '')   
+        self.access_token = token_data.get('access_token', '')
+        self.refresh_token = token_data.get('refresh_token', '')
+        self.streamer = qt_stream.QuestradeStreamer(
+            access_token = self.access_token,
+            api_server = self.api_server
+        )
+        self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=token_data.get('expires_in', 0))
+        if self.api_server and self.access_token:
+            # Start background thread for auto-refresh
+            self.thread = threading.Thread(target=self.auto_refresh_tokens, daemon=True)
+            self.thread.start()
             self.controller.frames[TradingStrategyFrame].search(show_output=True)
         self.controller.show_frame(TradingStrategyFrame)
+        
+    def auto_refresh_tokens(self):
+        while True:
+            with self.lock:
+                if self.expiry_time:
+                    # Refresh 2 minutes before expiry
+                    time_to_wait = max(0,(self.expiry_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() - 120)
+                else:
+                    time_to_wait = 60 # Default wait time if expiry unknown
+            
+            time.sleep(time_to_wait)
+            chat_output = self.controller.frames[TradingStrategyFrame].chat_output
+            try:
+                refresh_token_data = qt_api.refresh_access_token(self.refresh_token)
+                self.api_server = refresh_token_data.get('api_server', '')   
+                self.access_token = refresh_token_data.get('access_token', '')
+                self.refresh_token = refresh_token_data.get('refresh_token', '')    
+                self.streamer.access_token = self.access_token
+                self.streamer.api_server = self.api_server
+                if self.controller.frames[TradingStrategyFrame].chart_frame.live_switch_var.get():
+                    symbol_data = qt_api.get_stock_data(
+                        access_token=self.access_token,
+                        api_server=self.api_server, 
+                        symbol_str=self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
+                    )
+                    symbol_id = symbol_data[0]['symbolId']
+                    self.streamer.start_stream(symbol_id)
+                self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=refresh_token_data.get('expires_in', 0))
+                chat_output.config(state=tk.NORMAL)
+                chat_output.insert(tk.END, "Access token refreshed successfully.\n")
+                chat_output.config(state=tk.DISABLED)
+            except Exception as e:
+                chat_output.config(state=tk.NORMAL)
+                chat_output.insert(tk.END, f"Failed to refresh token: {e}\n")
+                chat_output.config(state=tk.DISABLED)
+                time.sleep(30)  # Wait a short delay before retrying
 
 class TradingStrategyFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -178,9 +231,8 @@ class TradingStrategyFrame(ttk.Frame):
         self.chat_output.config(state=tk.NORMAL)
         self.chat_output.insert(tk.END, f"Searching for: {stock_symbol}\n")
         # API Search
-        global access_token, api_server
-        my_access_token = access_token
-        my_api_server = api_server  
+        my_access_token = self.controller.frames[AuthFrame].access_token
+        my_api_server = self.controller.frames[AuthFrame].api_server  
         if not my_access_token and not my_api_server:
             self.chat_output.insert(tk.END, "No access token found, please log in and authenticate first.\n")
             self.chat_output.config(state=tk.DISABLED)
@@ -211,7 +263,7 @@ class TradingStrategyFrame(ttk.Frame):
         except requests.exceptions.HTTPError as err:
             self.chat_output.config(state=tk.NORMAL)
             self.chat_output.delete(1.0, tk.END)
-            self.chat_output.insert(tk.END, f"HTTEP error occurered {err}.\n")
+            self.chat_output.insert(tk.END, f"HTTP error occurered {err}.\n")
             self.chat_output.config(state=tk.DISABLED)                 
     
     def is_input_valid_float(self, input, name):
@@ -237,7 +289,11 @@ class TradingStrategyFrame(ttk.Frame):
     def run_backtest(self):
         picked_strategy = self.strategy_var.get()
         strategies_map = strategies.TradingStrategy.trading_strategies
-        candle_data = self.search(show_output=False)
+        candle_data = {}
+        if not self.chart_frame.live_switch_var.get():
+            candle_data = self.search(show_output=False)
+        else:
+            candle_data = self.controller.frames[AuthFrame].streamer.candle_aggregator.get_candles()
         if isinstance(candle_data, list):
             candle_data = pd.DataFrame(candle_data)  
             
@@ -297,6 +353,15 @@ class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
+        self.live_switch_var = tk.BooleanVar(value=False)  # OFF by default
+        self.live_switch = ttkb.Checkbutton(
+            self, 
+            text="Live mode", 
+            variable=self.live_switch_var, 
+            command=self.toggle_live_mode, 
+            bootstyle="success-round-toggle"
+        )
+        self.live_switch.grid(row=0, column=0, sticky="nsew")
         self.show_label_var = tk.BooleanVar(value=False)  # OFF by default
         self.show_label_toggle = ttk.Checkbutton(
             self, 
@@ -306,7 +371,7 @@ class CandlestickChartFrame(ttk.Frame):
             onvalue=True, 
             offvalue=False
         )
-        self.show_label_toggle.grid(row=0, column=0, sticky="nsew")
+        self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
         self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 960, height = 540)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
         self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
@@ -314,6 +379,19 @@ class CandlestickChartFrame(ttk.Frame):
         self.timeframe_control = self.create_segmented_control(self.timeframe_options, self.on_timeframe_change)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
+    
+    def toggle_live_mode(self):
+        if self.live_switch_var.get(): 
+            symbol_data = qt_api.get_stock_data(
+                access_token=self.controller.frames[AuthFrame].access_token,
+                api_server=self.controller.frames[AuthFrame].api_server, 
+                symbol_str=self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
+            )
+            symbol_id = symbol_data[0]['symbolId']
+            self.controller.frames[AuthFrame].streamer.start_stream(symbol_id)
+            self.periodically_update_chart()
+        else:
+            self.controller.frames[AuthFrame].streamer.stop_stream()
         
     def toggle_show_label(self):
         if self.show_label_var.get(): 
@@ -335,6 +413,12 @@ class CandlestickChartFrame(ttk.Frame):
         self.candle_chart.clear()
         self.candle_chart.plot(self.convert_data_for_chart(df), 
                                self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip())
+        
+    def periodically_update_chart(self):
+        candles_df = self.controller.frames[AuthFrame].streamer.candle_aggregator.get_candles()
+        if not candles_df.empty and self.live_switch_var.get():
+            self.update_chart(candles_df)
+        root.after(30000, self.periodically_update_chart)  # Update every 30 seconds     
                
     def create_segmented_control(self, options, command = None):
         self.sg_var = tk.StringVar(value=options[1])
@@ -506,7 +590,7 @@ class BackTestingResultsFrame(ttk.Frame):
             self.backtest_display.insert("", "end", values=list(row))
     
     def populate_result_text(self, results):
-        self.result_summary.config(text= f"Final Equity ($): {results['final_equity']}\n Proits ($): {results['profits']} \n Returns (%): {results['returns']}")   
+        self.result_summary.config(text= f"Final Equity ($): {results['final_equity']}\n Profits ($): {results['profits']} \n Returns (%): {results['returns']}")   
        
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
@@ -597,12 +681,14 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
         
         self.start_date_label = ttk.Label(self.content, text="Start Date:")
         self.start_date_label.pack(anchor="w")
-        self.start_date_input = DateEntry(self.content, year=2025, month=8, day=1)
+        self.start_date_input = DateEntry(self.content, bootstyle="success")
+        self.start_date_input.set_date(datetime.date(2025, 8, 1))
         self.start_date_input.pack(fill="x",pady=2)
         
         self.end_date_label = ttk.Label(self.content, text="End Date:")
         self.end_date_label.pack(anchor="w")
-        self.end_date_input = DateEntry(self.content, year=2025, month=8, day=31)
+        self.end_date_input = DateEntry(self.content, bootstyle="success")
+        self.end_date_input.set_date(datetime.date(2025, 8, 31))
         self.end_date_input.pack(fill="x", pady=2)
         
         trading_strategy = strategies.TradingStrategy
