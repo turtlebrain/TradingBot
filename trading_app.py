@@ -284,6 +284,8 @@ class TradingStrategyFrame(ttk.Frame):
             result_summary['final_equity'] = round(results['equity'].iloc[-1], 2)
             result_summary['profits'] = round(result_summary['final_equity'] - initial_equity, 2)
             result_summary['returns'] = round((result_summary['profits'] / initial_equity) * 100, 2)
+            result_summary['sharpe_ratio'] = round(engine.compute_sharpe_ratio(returns = results['returns'], 
+                                                                               timeframe = self.chart_frame.time_interval), 2)
         return result_summary
     
     def run_backtest(self):
@@ -503,7 +505,8 @@ class BackTestingResultsFrame(ttk.Frame):
         results_summary = { 
             "final_equity"  :   0,
             "profits"       :   0,
-            "returns"       :   0
+            "returns"       :   0,
+            "sharpe_ratio"  :   0
         }
         self.result_summary_var =  self.populate_result_text(results_summary)
         
@@ -590,8 +593,15 @@ class BackTestingResultsFrame(ttk.Frame):
             self.backtest_display.insert("", "end", values=list(row))
     
     def populate_result_text(self, results):
-        self.result_summary.config(text= f"Final Equity ($): {results['final_equity']}\n Profits ($): {results['profits']} \n Returns (%): {results['returns']}")   
-       
+        self.result_summary.config(
+            text=(
+                f"Final Equity ($): {results['final_equity']}\n"
+                f"Profits ($): {results['profits']}\n"
+                f"Returns (%): {results['returns']}\n"
+                f"Sharpe Ratio: {results['sharpe_ratio']}"
+            )
+        )     
+          
     def run_new_test(self):
         self.controller.show_frame(TradingStrategyFrame)
 
@@ -681,13 +691,13 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
         
         self.start_date_label = ttk.Label(self.content, text="Start Date:")
         self.start_date_label.pack(anchor="w")
-        self.start_date_input = DateEntry(self.content, bootstyle="success")
+        self.start_date_input = DateEntry(self.content, bootstyle="success", dateformat="%Y-%m-%d")
         self.start_date_input.set_date(datetime.date(2025, 8, 1))
         self.start_date_input.pack(fill="x",pady=2)
         
         self.end_date_label = ttk.Label(self.content, text="End Date:")
         self.end_date_label.pack(anchor="w")
-        self.end_date_input = DateEntry(self.content, bootstyle="success")
+        self.end_date_input = DateEntry(self.content, bootstyle="success", dateformat="%Y-%m-%d")
         self.end_date_input.set_date(datetime.date(2025, 8, 31))
         self.end_date_input.pack(fill="x", pady=2)
         

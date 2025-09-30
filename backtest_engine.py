@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import math
 
+
 engine_tol = 1e-9
 
 def backtest_strategy(
@@ -187,3 +188,42 @@ def backtest_strategy(
     result["drawdown"] = (result["equity"] - result["cum_max_equity"]) / result["cum_max_equity"].replace(0, np.nan)  
     result["returns"] = result["equity"].pct_change().fillna(0.0)
     return result
+
+def compute_sharpe_ratio(returns: pd.Series, timeframe: str = "OneDay", annual_rf: float = 0.02) -> float:
+    """
+    Compute annualized Sharpe Ratio for different timeframes.
+    
+    Parameters:
+    - returns: pd.Series of periodic returns (e.g., hourly, daily, weekly, monthly)
+    - timeframe: one of ["OneHour", "OneDay", "OneWeek", "OneMonth"]
+    - annual_rf: annualized risk-free rate (default = 0.02 = 2%)
+    
+    Returns:
+    - Sharpe Ratio (float)
+    """
+    # Map timeframe to periods per year
+    frequency_map = {
+        "OneHour": int(252 * 6.5),  # ~6.5 trading hours/day × 252 days
+        "OneDay": 252,              # trading days/year
+        "OneWeek": 52,              # weeks/year
+        "OneMonth": 12              # months/year
+    }
+    
+    if timeframe not in frequency_map:
+        raise ValueError(f"Invalid timeframe: {timeframe}. Must be one of {list(frequency_map.keys())}")
+    
+    periods_per_year = frequency_map[timeframe]
+    
+    # Convert annual risk-free rate to per-period
+    rf_per_period = (1 + annual_rf) ** (1 / periods_per_year) - 1
+    
+    # Excess returns
+    excess_returns = returns - rf_per_period
+    
+    mean_excess = excess_returns.mean()
+    sigma_p = excess_returns.std(ddof=1)
+    
+    # Annualized Sharpe
+    sharpe = (mean_excess / sigma_p) * np.sqrt(periods_per_year)
+    return sharpe
+
