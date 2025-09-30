@@ -19,6 +19,8 @@ class QuestradeStreamer:
         print("WebSocket connection opened.")
         # Send access token
         ws.send(self.access_token)
+        self.connected = True
+        
         
     def _on_message(self, ws, message):
         data = json.loads(message)
@@ -38,6 +40,7 @@ class QuestradeStreamer:
     
     def _on_close(self, ws, close_status_code, close_msg):
         print("WebSocket connection closed:", close_status_code, close_msg)
+        self.connected = False
     
     def get_stream_url(self, symbol_id) -> str:
         """
@@ -80,12 +83,10 @@ class QuestradeStreamer:
         )
         self.thread = threading.Thread(target=self.ws.run_forever, daemon=True)
         self.thread.start()
-        self.connected = True
     
     def stop_stream(self):
         if self.ws:
             self.ws.close()
             self.ws = None
-        self.connected = False
         print("WebSocket stream stopped.")
         
