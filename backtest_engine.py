@@ -202,6 +202,7 @@ def compute_sharpe_ratio(returns: pd.Series, timeframe: str = "OneDay", annual_r
     """
     # Map timeframe to periods per year
     frequency_map = {
+        "OneMinute": 252 * 6.5 * 60,  # ~6.5 trading hours/day × 252 days × 60 minutes
         "OneHour": int(252 * 6.5),  # ~6.5 trading hours/day × 252 days
         "OneDay": 252,              # trading days/year
         "OneWeek": 52,              # weeks/year

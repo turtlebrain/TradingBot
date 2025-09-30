@@ -284,8 +284,11 @@ class TradingStrategyFrame(ttk.Frame):
             result_summary['final_equity'] = round(results['equity'].iloc[-1], 2)
             result_summary['profits'] = round(result_summary['final_equity'] - initial_equity, 2)
             result_summary['returns'] = round((result_summary['profits'] / initial_equity) * 100, 2)
+            time_frame = self.chart_frame.time_interval
+            if self.chart_frame.live_switch_var.get():
+                time_frame = self.controller.frames[AuthFrame].streamer.candle_aggregator.time_interval
             result_summary['sharpe_ratio'] = round(engine.compute_sharpe_ratio(returns = results['returns'], 
-                                                                               timeframe = self.chart_frame.time_interval), 2)
+                                                                               timeframe = time_frame), 2)
         return result_summary
     
     def run_backtest(self):
@@ -389,11 +392,16 @@ class CandlestickChartFrame(ttk.Frame):
                 api_server=self.controller.frames[AuthFrame].api_server, 
                 symbol_str=self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
             )
+            for rb in self.timeframe_control:
+                rb.config(state=tk.DISABLED)
+            
             symbol_id = symbol_data[0]['symbolId']
             self.controller.frames[AuthFrame].streamer.start_stream(symbol_id)
             self.periodically_update_chart()
         else:
             self.controller.frames[AuthFrame].streamer.stop_stream()
+            for rb in self.timeframe_control:
+                rb.config(state=tk.NORMAL)
         
     def toggle_show_label(self):
         if self.show_label_var.get(): 
@@ -428,6 +436,7 @@ class CandlestickChartFrame(ttk.Frame):
         style = ttk.Style()
         style.configure("Segmented.TRadiobutton", indicatoron=0, relief="raised")
         style.map("Segmented.TRadiobutton", relief=[("selected", "sunken")])
+        buttons = []
         for i, option in enumerate(options):
             rb = ttk.Radiobutton(
                 self,
@@ -439,6 +448,8 @@ class CandlestickChartFrame(ttk.Frame):
             )
             rb.grid(row=2,column=i, sticky="nsew")
             self.columnconfigure(i, weight=1)
+            buttons.append(rb)
+        return buttons
     
     def _on_select(self):
         if self.sg_command:

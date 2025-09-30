@@ -13,7 +13,7 @@ class QuestradeStreamer:
         self.ws = None
         self.thread = None
         self.connected = False
-        self.candle_aggregator = tick_processor.CandleAggregator(interval_seconds=60)  # 1-minute candles
+        self.candle_aggregator = tick_processor.CandleAggregator(time_interval='OneMinute')  # 1-minute candles
         
     def _on_open(self, ws):
         print("WebSocket connection opened.")

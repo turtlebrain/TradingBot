@@ -3,7 +3,18 @@ import pandas as pd
 from collections import defaultdict
 
 class CandleAggregator:
-    def __init__(self, interval_seconds=60):
+    def __init__(self, time_interval: str = "OneMinute"):
+        self.time_interval = time_interval
+        # Map time intervals to seconds
+        interval_map = {
+        "OneMinute": 60,
+        "OneHour": int(252 * 6.5), 
+        "OneDay": 252,  
+        }
+        if time_interval not in interval_map:
+            raise ValueError(f"Invalid time interval: {time_interval}. Must be one of {list(interval_map.keys())}")
+    
+        interval_seconds = interval_map[time_interval]
         self.interval = interval_seconds
         self.candles = defaultdict(dict)  # {timestamp: {open, high, low, close, volume}}
 
