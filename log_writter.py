@@ -5,7 +5,7 @@ import uuid
 import gzip
 import datetime
 
-class AuditWriter:
+class LogWriter:
     def __init__(self, base_dir, hmac_key: bytes, app_env: str):
         self.base_dir = base_dir                # base directory to store audit files
         self.hmac_key = hmac_key                # HMAC key for signing anchors
