@@ -12,7 +12,7 @@ import position_sizing as pos_sz
 import risk_control as risk
 import backtest_engine as engine
 import requests 
-import chartforgetk_wrappers as cftk_wrap
+import chartforgetk_wrapper as cftk_wrap
 import time
 import datetime
 import threading
@@ -20,7 +20,6 @@ import tick_streamer as qt_stream
 
 
 class TradingBotApp:
-    
     def __init__(self, root):
         self.root = root
         self.root.title("AI trading Bot")
@@ -64,6 +63,7 @@ class TradingBotApp:
         
     def on_close(self):
         self.running = False
+        qt_api.log.end_session()
         self.root.quit()
         self.root.destroy()
             
@@ -458,8 +458,7 @@ class CandlestickChartFrame(ttk.Frame):
     def on_timeframe_change(self, value):
         self.time_interval = value
         trading_frame = self.controller.frames[TradingStrategyFrame]
-        trading_frame.search(show_output=True)
-        
+        trading_frame.search(show_output=True)       
                            
 class BackTestingResultsFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -800,7 +799,6 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             raise ValueError("No parameters available for this selected strategy")
              
         return strategy_params
-
         
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
