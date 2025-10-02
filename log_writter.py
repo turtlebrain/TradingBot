@@ -7,7 +7,7 @@ import datetime
 
 class LogWriter:
     def __init__(self, base_dir, hmac_key: bytes, app_env: str):
-        self.base_dir = base_dir                # base directory to store audit files
+        self.base_dir = base_dir                # base directory to store log files
         self.hmac_key = hmac_key                # HMAC key for signing anchors
         self.app_env = app_env                  # application environment (e.g., 'practice', 'live')
         self.sid = None                         # session ID
@@ -114,3 +114,47 @@ class LogWriter:
         self.prev_hash = curr_hash
         line = self._canonical(entry) + b"\n"
         self.fp.write(line)
+        
+    def log_req(self, method, url_path, host, headers = None, body = None, cid = None, env = None):
+        payload = {
+            "method": method,
+            "path": url_path,
+            "host": host,
+            "env": env or self.app_env,
+        }
+        # redaction of sensitive headers
+        if headers:
+            redacted = {}
+            for k, v in headers.items():
+                redacted[k] = "***" if k.lower() == "authorization" else v
+            payload["hdr"] = redacted
+        # whitelist safe body fields (symbol, side, qty, price) for logging
+        if isinstance(body, dict):
+            wl = {k: body[k] for k in ("symbol", "side", "qty", "price") if k in body}
+            if wl:
+                payload["body"] = wl
+        self._write("req", payload, cid = cid)
+        
+    def log_resp(self, status, ms, cid = None, klass = None):
+        payload = {
+            "status": status,
+            "ms": ms,
+        }
+        if klass:
+            payload["klass"] = klass
+        self._write("resp", payload, cid = cid)
+        
+    def log_order(self, symbol, side, qty, price, cid=None):
+        # bucket values tom reduce sensitivity
+        def bucket(x, cuts):
+            for c in cuts:
+                if x <= c:
+                    return f"<= {c}"
+            return f"> {cuts[-1]}"
+        payload = {
+            "sym": symbol,
+            "side": side,
+            "qty_b": bucket(qty, [10, 50, 100, 500, 1000, 5000]),
+            "pr_b": bucket(price, [10, 50, 100, 500, 1000, 5000]),
+        }
+        self._write("order", payload, cid = cid)

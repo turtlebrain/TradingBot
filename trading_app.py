@@ -12,7 +12,7 @@ import position_sizing as pos_sz
 import risk_control as risk
 import backtest_engine as engine
 import requests 
-import chartforgetk_wrappers as cftk_wrap
+import chartforgetk_wrapper as cftk_wrap
 import time
 import datetime
 import threading
