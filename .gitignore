@@ -3,3 +3,5 @@
 *.env
 _pycache_/
 __pycache__/
+*.log.gz
+*.anchor.json

@@ -20,7 +20,6 @@ import tick_streamer as qt_stream
 
 
 class TradingBotApp:
-    
     def __init__(self, root):
         self.root = root
         self.root.title("AI trading Bot")
@@ -458,8 +457,7 @@ class CandlestickChartFrame(ttk.Frame):
     def on_timeframe_change(self, value):
         self.time_interval = value
         trading_frame = self.controller.frames[TradingStrategyFrame]
-        trading_frame.search(show_output=True)
-        
+        trading_frame.search(show_output=True)       
                            
 class BackTestingResultsFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -800,7 +798,6 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             raise ValueError("No parameters available for this selected strategy")
              
         return strategy_params
-
         
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
