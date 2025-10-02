@@ -63,6 +63,7 @@ class TradingBotApp:
         
     def on_close(self):
         self.running = False
+        qt_api.log.end_session()
         self.root.quit()
         self.root.destroy()
             

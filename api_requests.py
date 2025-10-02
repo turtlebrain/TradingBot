@@ -3,8 +3,20 @@ from pathlib import Path
 import requests
 from datetime import datetime, timedelta
 import pytz
+from request_wrapper import LoggedSession
+from log_writter import LogWriter
 
-# ── CONFIG ─────────────────────────────────────────────────────────────────────
+# ── LOGGING SYSTEM ─────────────────────────────────────────────────────────────────────
+LOG_DIR = os.path.join(os.getcwd(), "logs")
+HMAC_KEY = os.environ["LOG_HMAC_KEY"].encode()
+ENV = "practice"  # or 'live' based on your environment
+
+log = LogWriter(base_dir=LOG_DIR, hmac_key=HMAC_KEY, app_env=ENV)
+log.start_session()
+http = LoggedSession(log=log, env=ENV, actor_id="api_requests")
+# ── END LOGGING SYSTEM ───────────────────────────────────────────────────────────────
+
+# ── AUTH CONFIG ─────────────────────────────────────────────────────────────────────
 env_path = Path(__file__).resolve().parent / ".env"
 if env_path.exists():
     from dotenv import load_dotenv
@@ -15,7 +27,7 @@ REDIRECT_URI = os.getenv("GROK_REDIRECT_URI")   # http tunnelling service URL
 
 if not CLIENT_ID or not REDIRECT_URI:
     raise RuntimeError("Please set the QUESTRADE_CLIENT_ID and GROK_REDIRECT_URI environment variables.")
-# ── END CONFIG ───────────────────────────────────────────────────────────────
+# ── END AUTH CONFIG ───────────────────────────────────────────────────────────────
 
 # ── QUESTRADE ENDPOINTS ────────────────────────────────────────────────────────────
 AUTH_BASE_URL  = "https://login.questrade.com/oauth2/authorize"
@@ -44,7 +56,7 @@ def exchange_code_for_tokens(code: str) -> dict:
         "code":         code,
         "redirect_uri": REDIRECT_URI,
     }
-    resp = requests.get(TOKEN_BASE_URL, params=params)
+    resp = http.get(TOKEN_BASE_URL, params=params)
     resp.raise_for_status()
     return resp.json()
 
@@ -58,7 +70,7 @@ def get_candlestick_data(access_token, api_server, symbol_id, start_date, end_da
     end = eastern.localize(datetime.combine(end_date,datetime.min.time())).isoformat()
     url = f"{api_server}v1/markets/candles/{symbol_id}?startTime={start}&endTime={end}&interval=OneDay"
     headers = get_headers(access_token)
-    response = requests.get(url, headers=headers)
+    response = http.get(url, headers=headers)
     response.raise_for_status() 
     return response.json()['candles']
 
@@ -92,7 +104,7 @@ def get_candles_paginated(access_token, api_server, symbol_id, start_date, end_d
             'interval': interval
         }
 
-        resp = requests.get(url, headers=headers, params=params)
+        resp = http.get(url, headers=headers, params=params)
         resp.raise_for_status()
         data = resp.json().get('candles', [])
 
@@ -109,7 +121,7 @@ def get_stock_data(access_token, api_server, symbol_str):
     params = {
         'prefix': symbol_str
     }
-    response = requests.get(url, headers=headers, params=params)
+    response = http.get(url, headers=headers, params=params)
     response.raise_for_status() 
     return response.json()['symbols']
 
@@ -127,6 +139,6 @@ def refresh_access_token(refresh_token):
         "grant_type":    "refresh_token",
         "refresh_token": refresh_token,
     }
-    resp = requests.get(TOKEN_BASE_URL, params=params)
+    resp = http.get(TOKEN_BASE_URL, params=params)
     resp.raise_for_status()
     return resp.json()

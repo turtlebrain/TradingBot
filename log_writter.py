@@ -38,7 +38,7 @@ class LogWriter:
         """
         Get current date string in YYYY-MM-DD iso format.
         """
-        return self._now().isoformat()
+        return self._now().date().isoformat()
     
     def _open_today(self):
         """
@@ -70,12 +70,12 @@ class LogWriter:
             "env": self.app_env,
             "ts": self._now().isoformat()
         }
-        msg = json.dumps(anchor, sort_keys = True, seperators=(",", ":")).encode()
+        msg = json.dumps(anchor, sort_keys = True, separators=(",", ":")).encode()
         # signs the anchor with HMAC-SHA256 to prove file wasn't tampered
         sig = hmac.new(self.hmac_key, msg, hashlib.sha256).hexdigest()  
         anchor["sig"] = sig
         with open(self._manifest_path(self.current_date), "w", encoding = "utf-8") as mf:
-            json.dump(anchor, mf, seperators=(",", ":" ))
+            json.dump(anchor, mf, separators=(",", ":" ))
         self.current_date = None
         
     def start_session(self):
