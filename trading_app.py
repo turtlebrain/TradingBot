@@ -17,6 +17,7 @@ import time
 import datetime
 import threading
 import tick_streamer as qt_stream
+import strategy_tree_builder as stb
 
 
 class TradingBotApp:
@@ -177,11 +178,10 @@ class TradingStrategyFrame(ttk.Frame):
         notebook.grid(row=0, column=0, sticky="ns")  # fill vertically
 
         # Create Tabs
-        self.strategy_var = tk.StringVar(value = "Double Moving Average Crossover")
         self.general_tab = self.controller.create_tab(notebook, "General", 
-                                   lambda parent: GeneralInfoCollapsibleFrame(parent, self.strategy_var))
+                                   lambda parent: GeneralInfoCollapsibleFrame(parent))
         self.strategy_tab = self.controller.create_tab(notebook, "Strategy", 
-                                   lambda parent: StrategyCollapsibleFrame(parent, self.strategy_var))
+                                   lambda parent: StrategyCollapsibleFrame(parent))
         self.execution_tab = self.controller.create_tab(notebook, "Execution", ExecutionCollasibleFrame)
 
         # --- Right-hand content area ---
@@ -292,8 +292,6 @@ class TradingStrategyFrame(ttk.Frame):
         return result_summary
     
     def run_backtest(self):
-        picked_strategy = self.strategy_var.get()
-        strategies_map = strategies.TradingStrategy.trading_strategies
         candle_data = {}
         if not self.chart_frame.live_switch_var.get():
             candle_data = self.search(show_output=False)
@@ -301,8 +299,6 @@ class TradingStrategyFrame(ttk.Frame):
             candle_data = self.controller.frames[AuthFrame].streamer.candle_aggregator.get_candles()
         if isinstance(candle_data, list):
             candle_data = pd.DataFrame(candle_data)  
-            
-        strategy_params = self.strategy_tab.get_strategy_params()
         
         initial_capital = self.execution_tab.starting_capital_input.get().strip()
         if not self.is_input_valid_float(initial_capital, "Starting Capital"):
@@ -328,8 +324,8 @@ class TradingStrategyFrame(ttk.Frame):
         try:
             backtest_results = engine.backtest_strategy(
                 data = candle_data, 
-                strategy_func = strategies_map[picked_strategy], 
-                strategy_param = strategy_params,
+                buy_logic = self.strategy_tab.buy_section, 
+                sell_logic = self.strategy_tab.sell_section,
                 position_sizer_func = pos_sz.fixed_fraction_position_sizer,
                 position_sizer_param = float(fixed_fraction),
                 stop_loss_func = sl_func,
@@ -345,7 +341,7 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.populate_backtest_display(backtest_results)
                 backtest_frame.results_chart.results = backtest_results      
                 backtest_frame.populate_result_text(self.get_result_summary(backtest_results))   
-                backtest_frame.title_label.configure(text=f"{picked_strategy}")
+                backtest_frame.title_label.configure(text=f"Backtest Results for {self.general_tab.stock_input.get().strip()}")
                 backtest_frame.results_chart.update_chart() 
             self.controller.show_frame(BackTestingResultsFrame)
         except ValueError as err:
@@ -530,8 +526,7 @@ class BackTestingResultsFrame(ttk.Frame):
         main_area.grid_columnconfigure(0, weight=1)
         main_area.grid_rowconfigure(1, weight=1)
         
-        tested_strategy = self.controller.frames[TradingStrategyFrame].strategy_var.get()
-        self.title_label = tk.Label(main_area, text=f"{tested_strategy}", bg="white", font=("Arial", 14))
+        self.title_label = tk.Label(main_area, text=f"Backtest results", bg="white", font=("Arial", 14))
         self.title_label.grid(row=0, column=0, columnspan=2, pady=2)
 
         # Chart area
@@ -690,9 +685,8 @@ class CollapsibleFrame(ttk.Frame):
             self.content.forget()
         
 class GeneralInfoCollapsibleFrame(CollapsibleFrame):
-    def __init__(self, parent, strategy_var):
+    def __init__(self, parent):
         super().__init__(parent, title = "General")
-        self.strategy_var = strategy_var
         self.stock_label = ttk.Label(self.content, text="Stock Symbol:")
         self.stock_label.pack(anchor="w")
         self.stock_input = ttk.Entry(self.content)
@@ -710,95 +704,26 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
         self.end_date_input = DateEntry(self.content, bootstyle="success", dateformat="%Y-%m-%d")
         self.end_date_input.set_date(datetime.date(2025, 8, 31))
         self.end_date_input.pack(fill="x", pady=2)
-        
-        trading_strategy = strategies.TradingStrategy
-        self.strategy_label = ttk.Label(self.content, text="Strategy:")
-        self.strategy_label.pack(anchor="w")
-        self.strategy_menu = ttk.OptionMenu(self.content, self.strategy_var, self.strategy_var.get(), *trading_strategy.trading_strategies.keys())
-        self.strategy_menu.pack(fill="x", pady=2)
 
 class StrategyCollapsibleFrame(CollapsibleFrame):
-    def __init__(self, parent, strategy_var):
-        super().__init__(parent, title="Strategy")    
-        self.strategy_var = strategy_var
-        self.strategy_var.trace_add("write", self.update_contents)
-        self.update_contents()
-        
-    def clear_content(self):
-        for widget in self.content.winfo_children():
-            widget.destroy()
+    def __init__(self, parent):
+        super().__init__(parent, title="Strategy")   
+        # BUY section 
+        strategy_list = list(strategies.TradingStrategy.trading_strategies.keys())
+        self.buy_section = stb.StrategySection(self.content, title="BUY", strategies = strategy_list, strategy_param_getter = self.get_strategy_params)
+        self.buy_section.pack(fill="x", pady=5)
+        # SELL section  
+        self.sell_section = stb.StrategySection(self.content, title="SELL", strategies = strategy_list, strategy_param_getter = self.get_strategy_params)
+        self.sell_section.pack(fill="x", pady=5)
     
-    def update_contents(self, *args):
-        self.clear_content()
-        selected = self.strategy_var.get()
-        
-        if selected == "Double Moving Average Crossover":
-            ttk.Label(self.content, text="Short Window:").pack(anchor="w")
-            self.short_entry = ttk.Entry(self.content)
-            self.short_entry.pack(fill="x", pady=2)
-            self.short_entry.insert(0, 20)
-            ttk.Label(self.content, text="Long Window:").pack(anchor="w")
-            self.long_entry = ttk.Entry(self.content)
-            self.long_entry.pack(fill="x", pady=2)
-            self.long_entry.insert(0, 50)
-        elif selected == "Support and Resistance Structure":
-            ttk.Label(self.content, text="Distance:").pack(anchor="w")
-            self.distance_entry = ttk.Entry(self.content)
-            self.distance_entry.pack(fill="x", pady=2)
-            self.distance_entry.insert(0, 5)
-        elif selected == "Relative Strength Index":
-            ttk.Label(self.content, text="Lookback Period:").pack(anchor="w")
-            self.lookback_entry = ttk.Entry(self.content)
-            self.lookback_entry.pack(fill="x", pady=2)
-            self.lookback_entry.insert(0, 14)
-            ttk.Label(self.content, text ="Overbought Threshold:").pack(anchor="w")
-            self.overbought_entry = ttk.Entry(self.content)
-            self.overbought_entry.pack(fill="x", pady=2)
-            self.overbought_entry.insert(0, 70)
-            ttk.Label(self.content, text ="Oversold Threshold:").pack(anchor="w")
-            self.oversold_entry = ttk.Entry(self.content)
-            self.oversold_entry.pack(fill="x", pady = 2)
-            self.oversold_entry.insert(0, 30)
-        elif selected == "Exponential Moving Average Breakout":
-            ttk.Label(self.content, text="Short Window:").pack(anchor="w")
-            self.short_ema_entry = ttk.Entry(self.content)
-            self.short_ema_entry.pack(fill="x", pady=2)
-            self.short_ema_entry.insert(0, 20)
-            ttk.Label(self.content, text="Long Window:").pack(anchor="w")
-            self.long_ema_entry = ttk.Entry(self.content)
-            self.long_ema_entry.pack(fill="x", pady=2)
-            self.long_ema_entry.insert(0, 50)
-        else:
-            ttk.Label(self.content, text=f"{selected} \n is not implemented yet").pack(anchor="w")
-    
-    def get_strategy_params(self):
-        strategy_params = None
-        selected = self.strategy_var.get()
-        
-        if selected == "Double Moving Average Crossover":
-            strategy_params = { 
-                "short_window"   :   self.short_entry.get().strip(),
-                "long_window"    :   self.long_entry.get().strip()
-            }
-        elif selected == "Support and Resistance Structure":
-            strategy_params = { 
-                "distance"   :   self.distance_entry.get().strip()
-            }
-        elif selected == "Relative Strength Index":
-            strategy_params = {
-                "lookback" : self.lookback_entry.get().strip(),
-                "overbought" : self.overbought_entry.get().strip(),
-                "oversold" : self.oversold_entry.get().strip()
-            }
-        elif selected == "Exponential Moving Average Breakout":
-            strategy_params = { 
-                "short_window"   :   self.short_ema_entry.get().strip(),
-                "long_window"    :   self.long_ema_entry.get().strip()
-            }
-        else:
-            raise ValueError("No parameters available for this selected strategy")
-             
-        return strategy_params
+    def get_strategy_params(self, name):
+        default_params = {
+            "DMA Crossover":{ "short_window"   :   20,"long_window"    :   50},
+            "S/R Structure": { "distance"   :   5},
+            "RSI": { "lookback" : 14, "overbought" : 70, "oversold" : 30},
+            "EMA Breakout": { "short_window"   :   20,"long_window"    :   50}
+        }
+        return default_params.get(name, {})
         
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):

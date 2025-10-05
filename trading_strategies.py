@@ -165,8 +165,8 @@ class TradingStrategy:
     
     # Map of strategy names to their corresponding methods
     trading_strategies = {
-        "Double Moving Average Crossover" : double_moving_average_crossover,
-        "Exponential Moving Average Breakout" : exponential_moving_average_breakout,
-        "Support and Resistance Structure" : support_resistace_structure,
-        "Relative Strength Index" : relative_strength_index
+        "DMA Crossover" : double_moving_average_crossover,
+        "EMA Breakout" : exponential_moving_average_breakout,
+        "S/R Structure" : support_resistace_structure,
+        "RSI" : relative_strength_index
     }

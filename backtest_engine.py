@@ -1,13 +1,14 @@
 import pandas as pd
 import numpy as np
 import math
+import strategy_tree_evaluator as ste
 
 engine_tol = 1e-9
 
 def backtest_strategy(
     data :pd.DataFrame, 
-    strategy_func, 
-    strategy_param,
+    buy_logic, 
+    sell_logic,
     position_sizer_func, 
     position_sizer_param,
     stop_loss_func,
@@ -21,8 +22,8 @@ def backtest_strategy(
     """ 
     Backtests a trading strategy on historical data.
     :param data: DataFrame with historical price data 
-    :param strategy_func: Function that generates trading signals
-    :param strategy_param: Strategy parameters being passed to strategy function
+    :param buy_logic: Logic (Serialized Strategy Section) that generates buy signals
+    :param sell_logic: Logic (Serialized Strategy Section) that generates sell signals
     :param position_sizer_func: Function that determines position size based on state
     :param position_sizer_param: Position Sizer parameters being passed to position sizer function
     :param stop_loss_func: Function that determines the stop loss to manage risk
@@ -44,7 +45,8 @@ def backtest_strategy(
         raise ValueError("lot_size must be at least 1.")
     shares = 0
     cash = float(starting_capital)
-    signals = strategy_func(candle_data, strategy_param)
+    signals = ste.evaluate_strategy(buy_logic, sell_logic, candle_data)
+    # Apply stop-loss function if provided
     if stop_loss_func is not None:
         signals = stop_loss_func(signals)
         
