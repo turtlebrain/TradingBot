@@ -28,51 +28,58 @@ def combine_series(a: pd.Series, b: pd.Series, op: str, side: str) -> pd.Series:
         else:  # OR
             return np.where((a == -1) | (b == -1), -1, 0)
 
-def evaluate_node(node: dict, data: pd.DataFrame, side: str) -> pd.Series:
+def evaluate_node(node: dict, data: pd.DataFrame, side: str) -> pd.DataFrame:
+    series_name = f"{side}_signal"
     if node["type"] == "strategy":
         func = trading_strategies.TradingStrategy.trading_strategies.get(node["name"])
         if func is None:
-            return pd.Series(0, index=data.index, name="signal")
+            data[series_name] = 0
+            return data
         df = func(data, node.get("params", {}))
-        return normalize_for_side(df["signal"], side)
+        df[series_name] = normalize_for_side(df["signal"], side)
+        return df
 
     elif node["type"] == "group":
         members = node.get("members", [])
         if not members:
-            return pd.Series(0, index=data.index, name="signal")
+            data[series_name] = 0
+            return data
 
         # Start with the first member
-        result = evaluate_node(members[0], data, side).astype(int)
+        result_df = evaluate_node(members[0], data, side)
 
         # Fold the rest using the group’s logic
         for m in members[1:]:
-            next_sig = evaluate_node(m, data, side).astype(int)
-            result = pd.Series(
-                combine_series(result, next_sig, node["logic"], side),
+            next_df = evaluate_node(m, data, side)
+            result_series = pd.Series(
+                combine_series(result_df[series_name], next_df[series_name], node["logic"], side),
                 index=data.index,
                 name="signal",
             )
-        return result
+            result_df[series_name] = result_series
+        return result_df
     
-def evaluate_section(section, data: pd.DataFrame, side: str) -> pd.Series:
+def evaluate_section(section, data: pd.DataFrame, side: str) -> pd.DataFrame:
     tree = section.serialize()
+    series_name = f"{side}_signal"
     if not tree:
-        return pd.Series(0, index=data.index, name=f"{side.lower()}_signal")
+        data[series_name] = 0
+        return data
 
     # Evaluate the first node
-    result = evaluate_node(tree[0], data, side).astype(int)
+    result_df = evaluate_node(tree[0], data, side)
 
     # Fold in the rest
     for i in range(1, len(tree)):
         op = tree[i - 1]["logic"]  # operator of previous row
-        next_sig = evaluate_node(tree[i], data, side).astype(int)
-        result = pd.Series(
-            combine_series(result, next_sig, op, side),
+        next_df = evaluate_node(tree[i], data, side)
+        result_series = pd.Series(
+            combine_series(result_df[series_name], next_df[series_name], op, side),
             index=data.index,
-            name=f"{side.lower()}_signal",
+            name="signal",
         )
-
-    return result
+        result_df[series_name] = result_series
+    return result_df
 
 def aggregate_buy_sell(buy: pd.Series, sell: pd.Series) -> pd.Series:
     buy = buy.fillna(0).clip(0, 1).astype(int)     # {0, 1}
@@ -83,3 +90,11 @@ def aggregate_buy_sell(buy: pd.Series, sell: pd.Series) -> pd.Series:
         np.where(buy == 1, 1, np.where(sell == -1, -1, 0))
     )
     return pd.Series(final, index=buy.index, name="signal")
+
+def evaluate_strategy(buy_section, sell_section, data: pd.DataFrame) -> pd.DataFrame:
+    buy_signals = evaluate_section(buy_section, data, "BUY")
+    sell_signals = evaluate_section(sell_section, data, "SELL")
+    combined_series = aggregate_buy_sell(buy_signals["BUY_signal"], sell_signals["SELL_signal"])
+    combined = buy_signals.copy()
+    combined["signal"] = combined_series
+    return combined

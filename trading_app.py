@@ -324,8 +324,8 @@ class TradingStrategyFrame(ttk.Frame):
         try:
             backtest_results = engine.backtest_strategy(
                 data = candle_data, 
-                buy_func = self.strategy_tab.buy_section.serialize(), 
-                sell_func = self.strategy_tab.sell_section.serialize(),
+                buy_logic = self.strategy_tab.buy_section, 
+                sell_logic = self.strategy_tab.sell_section,
                 position_sizer_func = pos_sz.fixed_fraction_position_sizer,
                 position_sizer_param = float(fixed_fraction),
                 stop_loss_func = sl_func,

@@ -147,7 +147,6 @@ class GroupRow(ttk.Frame):
         }
 
 
-
 class StrategySection(ttk.Frame):
     def __init__(self, master, title="Section", strategies=None, strategy_param_getter=None, *args, **kwargs):
         super().__init__(master, *args, **kwargs)

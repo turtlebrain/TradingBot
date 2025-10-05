@@ -45,9 +45,7 @@ def backtest_strategy(
         raise ValueError("lot_size must be at least 1.")
     shares = 0
     cash = float(starting_capital)
-    buy_signals = ste.evaluate_section(buy_logic, candle_data, "BUY")
-    sell_signals = ste.evaluate_section(sell_logic, candle_data, "SELL")
-    signals = ste.aggregate_buy_sell(buy_signals, sell_signals)
+    signals = ste.evaluate_strategy(buy_logic, sell_logic, candle_data)
     # Apply stop-loss function if provided
     if stop_loss_func is not None:
         signals = stop_loss_func(signals)
