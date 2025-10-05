@@ -42,7 +42,7 @@ class TradingBotApp:
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(TradingStrategyFrame)    
+        self.show_frame(LoginFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -292,8 +292,6 @@ class TradingStrategyFrame(ttk.Frame):
         return result_summary
     
     def run_backtest(self):
-        picked_strategy = self.strategy_var.get()
-        strategies_map = strategies.TradingStrategy.trading_strategies
         candle_data = {}
         if not self.chart_frame.live_switch_var.get():
             candle_data = self.search(show_output=False)
@@ -301,8 +299,6 @@ class TradingStrategyFrame(ttk.Frame):
             candle_data = self.controller.frames[AuthFrame].streamer.candle_aggregator.get_candles()
         if isinstance(candle_data, list):
             candle_data = pd.DataFrame(candle_data)  
-            
-        strategy_params = self.strategy_tab.get_strategy_params()
         
         initial_capital = self.execution_tab.starting_capital_input.get().strip()
         if not self.is_input_valid_float(initial_capital, "Starting Capital"):
@@ -328,8 +324,8 @@ class TradingStrategyFrame(ttk.Frame):
         try:
             backtest_results = engine.backtest_strategy(
                 data = candle_data, 
-                strategy_func = strategies_map[picked_strategy], 
-                strategy_param = strategy_params,
+                buy_func = self.strategy_tab.buy_section.serialize(), 
+                sell_func = self.strategy_tab.sell_section.serialize(),
                 position_sizer_func = pos_sz.fixed_fraction_position_sizer,
                 position_sizer_param = float(fixed_fraction),
                 stop_loss_func = sl_func,
@@ -345,7 +341,7 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.populate_backtest_display(backtest_results)
                 backtest_frame.results_chart.results = backtest_results      
                 backtest_frame.populate_result_text(self.get_result_summary(backtest_results))   
-                backtest_frame.title_label.configure(text=f"{picked_strategy}")
+                backtest_frame.title_label.configure(text=f"Backtest Results for {self.general_tab.stock_input.get().strip()}")
                 backtest_frame.results_chart.update_chart() 
             self.controller.show_frame(BackTestingResultsFrame)
         except ValueError as err:
@@ -721,7 +717,6 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.sell_section.pack(fill="x", pady=5)
     
     def get_strategy_params(self, name):
-        
         default_params = {
             "DMA Crossover":{ "short_window"   :   20,"long_window"    :   50},
             "S/R Structure": { "distance"   :   5},

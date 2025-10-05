@@ -78,6 +78,14 @@ class StrategyRow(ttk.Frame):
     def get_name(self):
         return self.name
 
+    def to_dict(self):
+        return {
+            "type": "strategy",
+            "name": self.get_name(),       # e.g. "EMA Breakout"
+            "logic": self.get_logic(),     # "AND" or "OR"
+            "params": getattr(self, "params", {}) or {},
+        }
+
 
 class GroupRow(ttk.Frame):
     counter = 1
@@ -129,6 +137,15 @@ class GroupRow(ttk.Frame):
 
     def get_name(self):
         return self.name
+    
+    def to_dict(self):
+        return {
+            "type": "group",
+            "name": self.get_name(),       # e.g. "Group 1"
+            "logic": self.get_logic(),     # operator inside the group
+            "members": [m.to_dict() for m in self.group_members],
+        }
+
 
 
 class StrategySection(ttk.Frame):
@@ -175,5 +192,14 @@ class StrategySection(ttk.Frame):
         for c in [new_group] + selected:
             if hasattr(c, "group_var"):
                 c.group_var.set(False)
+    
+    # Serialization to dict for evaluator
+    def serialize(self):
+        children = [
+            c for c in self.list_frame.winfo_children()
+            if hasattr(c, "to_dict")
+        ]
+        return [c.to_dict() for c in children]
+
     
 
