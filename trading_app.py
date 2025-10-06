@@ -5,6 +5,7 @@ import api_requests as qt_api
 import json
 import ttkbootstrap as ttkb
 from ttkbootstrap.widgets import DateEntry
+from ttkbootstrap.constants import *
 import trading_strategies as strategies
 import pandas as pd
 import tkinter.font as tkFont
@@ -485,10 +486,10 @@ class BackTestingResultsFrame(ttk.Frame):
         opt_frame = tk.Frame(sidebar, bg="#f0f0f0")
         opt_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
 
-        opt = ttk.OptionMenu(opt_frame, self.result_var, col_headers[4], *col_headers)
+        opt = ttk.Combobox(opt_frame, values=col_headers, textvariable=self.result_var, state="readonly")
         opt.pack(side="left", fill="x", expand=True)
 
-        add_btn = ttk.Button(opt_frame, text="+", width=3, command=self.add_series)
+        add_btn = ttk.Button(opt_frame, text="➕", width=2, bootstyle=SUCCESS, command=self.add_series)
         add_btn.pack(side="left", padx=(5, 0))
 
         # Row 1: Selected series list
@@ -579,7 +580,7 @@ class BackTestingResultsFrame(ttk.Frame):
             lbl = tk.Label(row, text=s, anchor="w", bg="#f0f0f0")
             lbl.pack(side="left", fill="x", expand=True)
 
-            rm_btn = ttk.Button(row, text="❌", width=2,
+            rm_btn = ttk.Button(row, text="❌", width=2, bootstyle= DANGER,
                                 command=lambda name=s: self.remove_series(name))
             rm_btn.pack(side="right")
 

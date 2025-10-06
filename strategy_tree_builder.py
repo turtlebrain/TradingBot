@@ -43,7 +43,7 @@ class StrategyRow(ttk.Frame):
         self.label.pack(side=LEFT, padx=2)
 
         # Parameters button
-        self.param_btn = ttk.Button(self, text="P", width=3, bootstyle=INFO, command=self.open_params)
+        self.param_btn = ttk.Button(self, text="P", width=2, bootstyle=INFO, command=self.open_params)
         self.param_btn.pack(side=LEFT, padx=2)
 
         self.logic = ttk.Combobox(self, values=["AND", "OR"], width=5, state="readonly")
@@ -54,7 +54,7 @@ class StrategyRow(ttk.Frame):
         self.checkbox = ttk.Checkbutton(self, variable=self.group_var)
         self.checkbox.pack(side=LEFT, padx=2)
 
-        self.remove_btn = ttk.Button(self, text="x", width=3, bootstyle=DANGER, command=self.remove_self)
+        self.remove_btn = ttk.Button(self, text="❌", width=2, bootstyle=DANGER, command=self.remove_self)
         self.remove_btn.pack(side=LEFT, padx=2)
 
     def open_params(self):
@@ -108,7 +108,7 @@ class GroupRow(ttk.Frame):
         self.checkbox = ttk.Checkbutton(self, variable=self.group_var)
         self.checkbox.pack(side=LEFT, padx=5)
 
-        self.remove_btn = ttk.Button(self, text="x", width=3, bootstyle=DANGER, command=self.remove_self)
+        self.remove_btn = ttk.Button(self, text="❌", width=2, bootstyle=DANGER, command=self.remove_self)
         self.remove_btn.pack(side=LEFT, padx=5)
 
         # Attach tooltip to the label
@@ -161,7 +161,7 @@ class StrategySection(ttk.Frame):
         selector.pack(fill=X, pady=5)
         self.combo = ttk.Combobox(selector, values=self.strategies, width=20)
         self.combo.pack(side=LEFT, padx=5)
-        ttk.Button(selector, text="+", width=3, bootstyle=SUCCESS, command=self.add_strategy).pack(side=LEFT, padx=5)
+        ttk.Button(selector, text="➕", width=2, bootstyle=SUCCESS, command=self.add_strategy).pack(side=LEFT, padx=5)
 
         self.list_frame = ttk.Frame(self)
         self.list_frame.pack(fill=X, pady=5)
