@@ -32,11 +32,11 @@ class TradingStrategy:
         signals['short_mavg'] = data['close'].rolling(window=short_window, min_periods=1).mean()
         signals['long_mavg'] = data['close'].rolling(window=long_window, min_periods=1).mean()
         
-        signals['signal'] = np.where(
+        signals['raw_signal'] = np.where(
             signals['short_mavg'] > signals['long_mavg'],  1,
             np.where(signals['short_mavg'] < signals['long_mavg'], -1, 0)
         )
-
+        signals['signal']=signals['raw_signal'].diff().fillna(0)
         signals['positions'] = signals['signal'].diff().fillna(0)
         
         return signals
@@ -70,11 +70,11 @@ class TradingStrategy:
         signals['EMA_short'] = data['close'].ewm(span=short_window, adjust=False).mean()
         signals['EMA_long'] = data['close'].ewm(span=long_window, adjust=False).mean()
         
-        signals['signal'] = np.where(
+        signals['raw_signal'] = np.where(
             signals['EMA_short'] > signals['EMA_long'],  1,
             np.where(signals['EMA_short'] < signals['EMA_long'], -1, 0)
         )
-        
+        signals['signal']=signals['raw_signal'].diff().fillna(0)
         signals['positions'] = signals['signal'].diff().fillna(0)
         
         return signals
