@@ -1,6 +1,6 @@
 import webbrowser
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 import api_requests as qt_api
 import json
 import ttkbootstrap as ttkb
@@ -38,12 +38,12 @@ class TradingBotApp:
         container.grid_columnconfigure(0, weight=1)
         
         self.frames = {}
-        for F in (LoginFrame, AuthFrame, TradingStrategyFrame, BackTestingResultsFrame):
+        for F in (LoginFrame, AuthFrame, AccountManagerFrame, TradingStrategyFrame, BackTestingResultsFrame):
             frame = F(parent=container, controller=self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
         
-        self.show_frame(LoginFrame)    
+        self.show_frame(TradingStrategyFrame)    
         
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -51,6 +51,8 @@ class TradingBotApp:
     
     def create_tab(self, notebook, title, frame_factory):
         tab_frame = ttk.Frame(notebook, padding=10)
+        back_btn = ttk.Button(tab_frame, text="← Back to Accounts", command=lambda:  self.frames[TradingStrategyFrame].back_to_accounts())
+        back_btn.pack(side='top', anchor='w', fill='x', pady=(0,10))  
         notebook.add(tab_frame, text=title)
         collapsible = frame_factory(tab_frame)
         collapsible.pack(side='left', fill='y')
@@ -124,8 +126,7 @@ class AuthFrame(ttk.Frame):
             # Start background thread for auto-refresh
             self.thread = threading.Thread(target=self.auto_refresh_tokens, daemon=True)
             self.thread.start()
-            self.controller.frames[TradingStrategyFrame].search(show_output=True)
-        self.controller.show_frame(TradingStrategyFrame)
+        self.controller.show_frame(AccountManagerFrame)
         
     def auto_refresh_tokens(self):
         while True:
@@ -163,6 +164,127 @@ class AuthFrame(ttk.Frame):
                 chat_output.config(state=tk.DISABLED)
                 time.sleep(30)  # Wait a short delay before retrying
 
+class AccountManagerFrame(ttk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        self.accounts = {}
+        
+        ttk.Label(self, text="Account Manager", font=("Poppins", 16)).pack(pady=10)
+        
+        self.list_frame = ttk.Frame(self)
+        self.list_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.render_accounts()
+        
+        ttk.Button(self, text="➕ New Account", width=25, bootstyle=SUCCESS, command=self.create_account).pack(pady=10)
+    
+    def render_accounts(self):
+        for widget in self.list_frame.winfo_children():
+            widget.destroy()
+
+        if not self.accounts:
+            ttk.Label(self.list_frame, text="No accounts yet. Create one to get started.").pack()
+            return
+
+        for name, meta in self.accounts.items():
+            row = ttk.Frame(self.list_frame, bootstyle="light")  # or "light", "dark", etc.
+            row.pack(fill="x", pady=2, padx=5, ipady=5, ipadx=5)
+
+            def open(n=name):
+                self.open_account(n)
+
+            # Bind click to row and all children
+            row.bind("<Button-1>", lambda e: open())
+        
+            # Create widgets
+            name_lbl = ttk.Label(row, text=name, font=("Poppins", 12, "bold"))
+            # Using ttkbootstrap-friendly labels
+            created_lbl = ttk.Label(row, text=f"Created: {meta['created']}", foreground="gray")
+            opened_lbl = ttk.Label(row, text=f"Last opened: {meta['last_opened']}", foreground="gray")
+            rename_btn = ttk.Button(row, text="Rename", width = 8, bootstyle=INFO, command=lambda n=name: self.rename_account(n))
+            delete_btn = ttk.Button(row, text="Delete", width = 8, bootstyle=DANGER, command=lambda n=name: self.delete_account(n))
+
+            # Pack them
+            name_lbl.pack(side="left")
+            created_lbl.pack(side="left", padx=10)
+            opened_lbl.pack(side="left", padx=10)
+            delete_btn.pack(side="right", padx=2)
+            rename_btn.pack(side="right", padx=2)
+
+            # Bind click to labels too
+            for widget in [name_lbl, created_lbl, opened_lbl]:
+                widget.bind("<Button-1>", lambda e: open())
+            
+    def create_account(self):
+        # Prompt for account name and starting capital
+        dialog = AccountDialog(self)
+        self.wait_window(dialog.top)
+
+        if dialog.result:
+            name, capital = dialog.result
+            if name in self.accounts:
+                messagebox.showerror("Error", f"Account '{name}' already exists.")
+                return
+    
+        # Create account metadata
+        self.accounts[name]={
+            "created": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            "last_opened": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M"),
+            "capital": capital
+        }
+        self.render_accounts()
+            
+    def on_open_trading_view(self, name, meta):
+        self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.delete(0, tk.END)
+        self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.insert(0, str(meta["capital"]))
+        self.controller.show_frame(TradingStrategyFrame)
+        
+    def open_account(self, name):
+        self.accounts[name]["last_opened"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
+        self.on_open_trading_view(name, self.accounts[name])
+    
+    def rename_account(self, name):
+        new_name = simpledialog.askstring("Rename Account", "Enter new name:")
+        if new_name and new_name not in self.accounts:
+            self.accounts[new_name] = self.accounts.pop(name)
+            self.render_accounts()
+    
+    def delete_account(self, name):
+        if messagebox.askyesno("Delete Account", f"Delete {name}?"):
+            del self.accounts[name]
+            self.render_accounts()
+        
+class AccountDialog:
+    def __init__(self, parent):
+        top = self.top = tk.Toplevel(parent)
+        top.title("New Account")
+
+        ttk.Label(top, text="Account Name:").pack(pady=5)
+        self.name_entry = ttk.Entry(top)
+        self.name_entry.pack(pady=5)
+
+        ttk.Label(top, text="Starting Capital:").pack(pady=5)
+        self.capital_entry = tk.Entry(top)
+        self.capital_entry.pack(pady=5)
+
+        ttk.Button(top, text="Create", command=self.on_ok, bootstyle=SUCCESS).pack(pady=10)
+
+        self.result = None
+
+    def on_ok(self):
+        name = self.name_entry.get().strip()
+        try:
+            capital = float(self.capital_entry.get())
+        except ValueError:
+            messagebox.showerror("Error", "Please enter a valid number for capital.")
+            return
+        if not name:
+            messagebox.showerror("Error", "Account name cannot be empty.")
+            return
+        self.result = (name, capital)
+        self.top.destroy()
+    
 class TradingStrategyFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
@@ -177,7 +299,7 @@ class TradingStrategyFrame(ttk.Frame):
         # Notebook in column 0
         notebook = ttk.Notebook(self, style="TNotebook")
         notebook.grid(row=0, column=0, sticky="ns")  # fill vertically
-
+        
         # Create Tabs
         self.general_tab = self.controller.create_tab(notebook, "General", 
                                    lambda parent: GeneralInfoCollapsibleFrame(parent))
@@ -266,6 +388,12 @@ class TradingStrategyFrame(ttk.Frame):
             self.chat_output.delete(1.0, tk.END)
             self.chat_output.insert(tk.END, f"HTTP error occurered {err}.\n")
             self.chat_output.config(state=tk.DISABLED)                 
+    
+    def back_to_accounts(self):
+        if self.chart_frame.live_switch_var.get():
+            self.chart_frame.live_switch_var.set(False)
+            self.chart_frame.toggle_live_mode()
+        self.controller.show_frame(AccountManagerFrame)
     
     def is_input_valid_float(self, input, name):
         try:
@@ -527,7 +655,7 @@ class BackTestingResultsFrame(ttk.Frame):
         main_area.grid_columnconfigure(0, weight=1)
         main_area.grid_rowconfigure(1, weight=1)
         
-        self.title_label = tk.Label(main_area, text=f"Backtest results", bg="white", font=("Arial", 14))
+        self.title_label = tk.Label(main_area, text=f"Backtest results", bg="white", font=("Poppins", 14))
         self.title_label.grid(row=0, column=0, columnspan=2, pady=2)
 
         # Chart area
