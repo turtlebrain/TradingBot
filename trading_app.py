@@ -234,15 +234,17 @@ class AccountManagerFrame(ttk.Frame):
             "capital": capital
         }
         self.render_accounts()
+        # Automatically goes to trading view after being created
+        self.on_open_trading_view(self.accounts[name])
             
-    def on_open_trading_view(self, name, meta):
+    def on_open_trading_view(self, meta):
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.delete(0, tk.END)
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.insert(0, str(meta["capital"]))
         self.controller.show_frame(TradingStrategyFrame)
         
     def open_account(self, name):
         self.accounts[name]["last_opened"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
-        self.on_open_trading_view(name, self.accounts[name])
+        self.on_open_trading_view(self.accounts[name])
     
     def rename_account(self, name):
         new_name = simpledialog.askstring("Rename Account", "Enter new name:")
