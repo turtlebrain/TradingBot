@@ -138,7 +138,6 @@ class AuthFrame(ttk.Frame):
                     time_to_wait = 60 # Default wait time if expiry unknown
             
             time.sleep(time_to_wait)
-            chat_output = self.controller.frames[TradingStrategyFrame].chat_output
             try:
                 refresh_token_data = qt_api.refresh_access_token(self.refresh_token)
                 self.api_server = refresh_token_data.get('api_server', '')   
@@ -155,13 +154,9 @@ class AuthFrame(ttk.Frame):
                     symbol_id = symbol_data[0]['symbolId']
                     self.streamer.start_stream(symbol_id)
                 self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=refresh_token_data.get('expires_in', 0))
-                chat_output.config(state=tk.NORMAL)
-                chat_output.insert(tk.END, "Access token refreshed successfully.\n")
-                chat_output.config(state=tk.DISABLED)
+                print("Access token refreshed successfully")
             except Exception as e:
-                chat_output.config(state=tk.NORMAL)
-                chat_output.insert(tk.END, f"Failed to refresh token: {e}\n")
-                chat_output.config(state=tk.DISABLED)
+                print("Failed to refresh token:", e)
                 time.sleep(30)  # Wait a short delay before retrying
 
 class AccountManagerFrame(ttk.Frame):
@@ -188,7 +183,7 @@ class AccountManagerFrame(ttk.Frame):
             return
 
         for name, meta in self.accounts.items():
-            row = ttk.Frame(self.list_frame, bootstyle="light")  # or "light", "dark", etc.
+            row = ttk.Frame(self.list_frame, bootstyle="light")  
             row.pack(fill="x", pady=2, padx=5, ipady=5, ipadx=5)
 
             def open(n=name):
@@ -199,13 +194,11 @@ class AccountManagerFrame(ttk.Frame):
         
             # Create widgets
             name_lbl = ttk.Label(row, text=name, font=("Poppins", 12, "bold"))
-            # Using ttkbootstrap-friendly labels
             created_lbl = ttk.Label(row, text=f"Created: {meta['created']}", foreground="gray")
             opened_lbl = ttk.Label(row, text=f"Last opened: {meta['last_opened']}", foreground="gray")
             rename_btn = ttk.Button(row, text="Rename", width = 8, bootstyle=INFO, command=lambda n=name: self.rename_account(n))
             delete_btn = ttk.Button(row, text="Delete", width = 8, bootstyle=DANGER, command=lambda n=name: self.delete_account(n))
 
-            # Pack them
             name_lbl.pack(side="left")
             created_lbl.pack(side="left", padx=10)
             opened_lbl.pack(side="left", padx=10)
@@ -264,13 +257,13 @@ class AccountDialog:
 
         ttk.Label(top, text="Account Name:").pack(pady=5)
         self.name_entry = ttk.Entry(top)
-        self.name_entry.pack(pady=5)
+        self.name_entry.pack(padx=5, pady=5)
 
         ttk.Label(top, text="Starting Capital:").pack(pady=5)
         self.capital_entry = tk.Entry(top)
-        self.capital_entry.pack(pady=5)
+        self.capital_entry.pack(padx=5, pady=5)
 
-        ttk.Button(top, text="Create", command=self.on_ok, bootstyle=SUCCESS).pack(pady=10)
+        ttk.Button(top, text="Create", command=self.on_ok, bootstyle=SUCCESS).pack(padx=10, pady=10)
 
         self.result = None
 
@@ -304,7 +297,7 @@ class TradingStrategyFrame(ttk.Frame):
         
         # Create Tabs
         self.general_tab = self.controller.create_tab(notebook, "General", 
-                                   lambda parent: GeneralInfoCollapsibleFrame(parent))
+                                   lambda parent: GeneralInfoCollapsibleFrame(parent, self.controller))
         self.strategy_tab = self.controller.create_tab(notebook, "Strategy", 
                                    lambda parent: StrategyCollapsibleFrame(parent))
         self.execution_tab = self.controller.create_tab(notebook, "Execution", ExecutionCollasibleFrame)
@@ -314,59 +307,45 @@ class TradingStrategyFrame(ttk.Frame):
         right_frame.grid(row=0, column=1, sticky="nsew")
         right_frame.columnconfigure(0, weight=1)
         right_frame.columnconfigure(1, weight=1)
-        right_frame.rowconfigure(1, weight=1)  # chart expands
-
-        # Buttons
-        self.search_button = ttk.Button(right_frame, width=50, text="Search", command=self.search)
-        self.search_button.grid(row=0, column=0, padx=2, pady=2)
-
-        self.backtest_button = ttk.Button(right_frame, width=50, text="Run Backtest", command=self.run_backtest)
-        self.backtest_button.grid(row=0, column=1, padx=2, pady=2)
+        right_frame.rowconfigure(0, weight=1)  # chart expands
 
         # Chart
         self.chart_frame = CandlestickChartFrame(right_frame, controller)
-        self.chart_frame.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+        self.chart_frame.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
 
-        # Chat output
-        self.chat_output = tk.Text(right_frame, height=5, state=tk.DISABLED)
-        self.chat_output.grid(row=2, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+        # Positions Table
+        cols = ("Symbol", "Quantity", "Avg Price", "Current Price", "P/L")  
+        self.positions_table = ttk.Treeview(right_frame, columns = cols, show="headings", height = 8)
+        for col in cols:
+            self.positions_table.heading(col, text = col)
+            self.positions_table.column(col, anchor="center", width=100)
+        self.positions_table.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="nsew") 
 
-        self.scrollbar = ttk.Scrollbar(right_frame, command=self.chat_output.yview)
-        self.scrollbar.grid(row=2, column=2, sticky='ns')
-        self.chat_output['yscrollcommand'] = self.scrollbar.set
+        self.scrollbar = ttk.Scrollbar(right_frame, command=self.positions_table.yview)
+        self.scrollbar.grid(row=1, column=2, sticky='ns')
+        self.positions_table['yscrollcommand'] = self.scrollbar.set
 
-        # Clear button
-        self.clear_button = ttk.Button(right_frame, text="Clear", command=self.clear_form)
-        self.clear_button.grid(row=3, column=0, columnspan=2, pady=2, sticky='ns')
-
-
-    def clear_form(self):
-        self.chat_output.config(state=tk.NORMAL) 
-        self.chat_output.delete(1.0, tk.END) 
-        self.chat_output.config(state=tk.DISABLED)   
+        # Run backtest button    
+        self.backtest_button = ttk.Button(right_frame, width=50, text="Run Backtest", command=self.run_backtest)
+        self.backtest_button.grid(row=2, column=0, columnspan=2, padx=2, pady=2)
                   
-    def search(self, show_output=True):
-        self.clear_form()    
+    def search(self, show_output=True):  
         stock_symbol = self.general_tab.stock_input.get().strip() 
         start_date = self.general_tab.start_date_input.get_date().isoformat()
         end_date = self.general_tab.end_date_input.get_date().isoformat()
         if not stock_symbol or not start_date or not end_date:
             messagebox.showwarning("Input Error", "Please enter a valid stock symbol as query.")
             return
-        self.chat_output.config(state=tk.NORMAL)
-        self.chat_output.insert(tk.END, f"Searching for: {stock_symbol}\n")
         # API Search
         my_access_token = self.controller.frames[AuthFrame].access_token
         my_api_server = self.controller.frames[AuthFrame].api_server  
         if not my_access_token and not my_api_server:
-            self.chat_output.insert(tk.END, "No access token found, please log in and authenticate first.\n")
-            self.chat_output.config(state=tk.DISABLED)
+            print("No access token found, please log in and authenticate first")
             return   
         try:   
             symbol_data = qt_api.get_stock_data(access_token=my_access_token, api_server=my_api_server, symbol_str=stock_symbol)
             if not symbol_data:
-                self.chat_output.insert(tk.END, f"No data found for {stock_symbol}.\n")
-                self.chat_output.config(state=tk.DISABLED)
+                print("No data found for:", stock_symbol)
                 return
             symbol_id = symbol_data[0]['symbolId']
             chart_frame = self.chart_frame
@@ -380,16 +359,11 @@ class TradingStrategyFrame(ttk.Frame):
             )
             candle_data_pd = pd.DataFrame(candle_data)
             if show_output:
-                self.chat_output.insert(tk.END, f"Candlestick data:\n{json.dumps(candle_data, indent=2)}\n")
-                self.chat_output.config(state=tk.DISABLED)
                 # Plot candlestick chart
                 chart_frame.update_chart(candle_data_pd)
             return candle_data
         except requests.exceptions.HTTPError as err:
-            self.chat_output.config(state=tk.NORMAL)
-            self.chat_output.delete(1.0, tk.END)
-            self.chat_output.insert(tk.END, f"HTTP error occurered {err}.\n")
-            self.chat_output.config(state=tk.DISABLED)                 
+            messagebox.showerror(f"HTTP error occurered {err}")           
     
     def back_to_accounts(self):
         if self.chart_frame.live_switch_var.get():
@@ -402,10 +376,7 @@ class TradingStrategyFrame(ttk.Frame):
             float(input)
             return True
         except ValueError:
-            self.chat_output.config(state=tk.NORMAL)
-            self.chat_output.delete(1.0, tk.END)
-            self.chat_output.insert(tk.END, f"Please enter a valid {name} (number only).\n")
-            self.chat_output.config(state=tk.DISABLED)
+            messagebox.showerror(f"Please enter a valid {name}")
             return False
             
     def get_result_summary(self, results):
@@ -476,10 +447,7 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.update_chart() 
             self.controller.show_frame(BackTestingResultsFrame)
         except ValueError as err:
-            self.chat_output.config(state=tk.NORMAL)
-            self.chat_output.delete(1.0, tk.END)
-            self.chat_output.insert(tk.END, f"Error: {err}.\n")
-            self.chat_output.config(state=tk.DISABLED)
+            messagebox.showerror(f"Error: {err}")
    
 class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -816,25 +784,53 @@ class CollapsibleFrame(ttk.Frame):
             self.content.forget()
         
 class GeneralInfoCollapsibleFrame(CollapsibleFrame):
-    def __init__(self, parent):
-        super().__init__(parent, title = "General")
+    def __init__(self, parent, controller):
+        super().__init__(parent, title="General")
+        self.controller = controller
+        # Stock symbol label
         self.stock_label = ttk.Label(self.content, text="Stock Symbol:")
-        self.stock_label.pack(anchor="w")
-        self.stock_input = ttk.Entry(self.content)
+        self.stock_label.pack(anchor="w", pady=(0, 2))
+
+        # Frame to hold entry + search button side by side
+        stock_frame = ttk.Frame(self.content)
+        stock_frame.pack(fill="x", pady=2)
+
+        self.stock_input = ttk.Entry(stock_frame)
         self.stock_input.insert(0, "AAPL")
-        self.stock_input.pack(fill="x", pady=2)
-        
+        self.stock_input.pack(side="left", fill="x", expand=True, padx=(0, 5))
+
+        self.search_btn = ttk.Button(
+            stock_frame,
+            text="🔍",
+            width=3,
+            command=lambda: self.controller.frames[TradingStrategyFrame].search()
+        )
+        self.search_btn.pack(side="left")
+
+        # Start date
         self.start_date_label = ttk.Label(self.content, text="Start Date:")
-        self.start_date_label.pack(anchor="w")
-        self.start_date_input = DateEntry(self.content, bootstyle="success", dateformat="%Y-%m-%d")
+        self.start_date_label.pack(anchor="w", pady=(5, 2))
+
+        self.start_date_input = DateEntry(
+            self.content,
+            bootstyle="success",
+            dateformat="%Y-%m-%d"
+        )
         self.start_date_input.set_date(datetime.date(2025, 8, 1))
-        self.start_date_input.pack(fill="x",pady=2)
-        
+        self.start_date_input.pack(fill="x", pady=2)
+
+        # End date
         self.end_date_label = ttk.Label(self.content, text="End Date:")
-        self.end_date_label.pack(anchor="w")
-        self.end_date_input = DateEntry(self.content, bootstyle="success", dateformat="%Y-%m-%d")
+        self.end_date_label.pack(anchor="w", pady=(5, 2))
+
+        self.end_date_input = DateEntry(
+            self.content,
+            bootstyle="success",
+            dateformat="%Y-%m-%d"
+        )
         self.end_date_input.set_date(datetime.date(2025, 8, 31))
         self.end_date_input.pack(fill="x", pady=2)
+
 
 class StrategyCollapsibleFrame(CollapsibleFrame):
     def __init__(self, parent):
