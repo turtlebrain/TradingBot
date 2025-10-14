@@ -6,6 +6,7 @@ class CandlestickChartNoLabels(CandlestickChart):
     def __init__(self, *args, show_labels=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.show_labels = show_labels
+        self.grid(row=0, column=0, sticky="nsew")
 
     def plot(self, data: List[Tuple[float, float, float, float, float]], title: str = "Candlestick Chart"):
         """Plot an improved candlestick chart with (index, open, high, low, close) data"""
@@ -133,6 +134,7 @@ class LineChartNoLabels(LineChart):
     def __init__(self, *args, show_labels=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.show_labels = show_labels
+        self.grid(row=0, column=0, sticky="nsew")
 
     def _animate_lines(self, y_min: float, y_max: float):
         """Added ability through show_labels to turn on/off labels."""
