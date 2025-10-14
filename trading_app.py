@@ -311,7 +311,7 @@ class AccountDialog:
         self.name_entry.pack(padx=5, pady=5)
 
         ttk.Label(top, text="Starting Capital:").pack(pady=5)
-        self.capital_entry = tk.Entry(top)
+        self.capital_entry = ttk.Entry(top)
         self.capital_entry.pack(padx=5, pady=5)
 
         ttk.Button(top, text="Create", command=self.on_ok, bootstyle=SUCCESS).pack(padx=10, pady=10)
