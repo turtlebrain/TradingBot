@@ -25,34 +25,87 @@ class TradingBotApp:
     def __init__(self, root):
         self.root = root
         self.root.title("AI trading Bot")
-        self.root.geometry("1280x720")
+        self.root.geometry("1440x810")
         self.system_running = False
-        
+
         # Change default font for all widgets to Poppins
         default_font = tkFont.nametofont("TkDefaultFont")
         default_font.configure(family="Poppins")
-        # Container to hold all frames
+
+        # --- Container with 2 rows: nav bar (row 0), content frames (row 1) ---
         container = ttk.Frame(root)
         container.pack(fill="both", expand=True)
-        container.grid_rowconfigure(0, weight=1)
+        container.grid_rowconfigure(1, weight=1)   # row 1 expands
         container.grid_columnconfigure(0, weight=1)
-        
+
+        # --- Nav bar (row 0), hidden until after_auth() ---
+        self.nav_frame = ttk.Frame(container)
+        self.nav_frame.grid(row=0, column=0, sticky="ew")
+        self.nav_frame.grid_remove()  # hide initially
+
+        self.nav_buttons = {}
+
+        # --- Content area (row 1) ---
         self.frames = {}
         for F in (LoginFrame, AuthFrame, AccountManagerFrame, TradingStrategyFrame, BackTestingResultsFrame):
             frame = F(parent=container, controller=self)
             self.frames[F] = frame
-            frame.grid(row=0, column=0, sticky="nsew")
-        
-        self.show_frame(TradingStrategyFrame)    
-        
+            frame.grid(row=1, column=0, sticky="nsew")
+
+        # Start at login
+        self.show_frame(LoginFrame)
+     
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
         frame.tkraise() 
     
+    def show_main_frame(self, frame_class, name):
+        """Show one of the main frames and update nav button styles."""
+        self.show_frame(frame_class)
+        # Update nav button styles
+        for btn_name, btn in self.nav_buttons.items():
+            if btn_name == name:
+                btn.configure(bootstyle="primary-toolbutton")  # active
+            else:
+                btn.configure(bootstyle="primary-outline-toolbutton")  # inactive
+    
+    def after_auth(self):
+        """Call this once AuthFrame succeeds."""
+        # Build nav buttons once
+        if not self.nav_buttons:
+            # Configure nav_frame to use grid with 3 equal columns
+            self.nav_frame.columnconfigure(0, weight=1)
+            self.nav_frame.columnconfigure(1, weight=1)
+            self.nav_frame.columnconfigure(2, weight=1)
+
+            self.nav_buttons["accounts"] = ttk.Button(
+                self.nav_frame, text="Accounts",
+                bootstyle="primary-outline-toolbutton",
+                command=lambda: self.show_main_frame(AccountManagerFrame, "accounts")
+            )
+            self.nav_buttons["accounts"].grid(row=0, column=0, sticky="ew", padx=2, pady=2)
+
+            self.nav_buttons["trading"] = ttk.Button(
+                self.nav_frame, text="Trading",
+                bootstyle="primary-outline-toolbutton",
+                command=lambda: self.show_main_frame(TradingStrategyFrame, "trading")
+            )
+            self.nav_buttons["trading"].grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+
+            self.nav_buttons["performance"] = ttk.Button(
+                self.nav_frame, text="Performance",
+                bootstyle="primary-outline-toolbutton",
+                command=lambda: self.show_main_frame(BackTestingResultsFrame, "performance")
+            )
+            self.nav_buttons["performance"].grid(row=0, column=2, sticky="ew", padx=2, pady=2)
+
+        # Show nav bar
+        self.nav_frame.grid()  # make it visible
+        # Default to Accounts view
+        self.show_main_frame(AccountManagerFrame, "accounts")
+
     def create_tab(self, notebook, title, frame_factory):
         tab_frame = ttk.Frame(notebook, padding=10)
-        back_btn = ttk.Button(tab_frame, text="← Back to Accounts", command=lambda:  self.frames[TradingStrategyFrame].back_to_accounts())
-        back_btn.pack(side='top', anchor='w', fill='x', pady=(0,10))  
         notebook.add(tab_frame, text=title)
         collapsible = frame_factory(tab_frame)
         collapsible.pack(side='left', fill='y')
@@ -126,7 +179,7 @@ class AuthFrame(ttk.Frame):
             # Start background thread for auto-refresh
             self.thread = threading.Thread(target=self.auto_refresh_tokens, daemon=True)
             self.thread.start()
-        self.controller.show_frame(AccountManagerFrame)
+        self.controller.after_auth()
         
     def auto_refresh_tokens(self):
         while True:
@@ -164,8 +217,6 @@ class AccountManagerFrame(ttk.Frame):
         super().__init__(parent)
         self.controller = controller
         self.accounts = {}
-        
-        ttk.Label(self, text="Account Manager", font=("Poppins", 16)).pack(pady=10)
         
         self.list_frame = ttk.Frame(self)
         self.list_frame.pack(fill=tk.BOTH, expand=True)
@@ -233,7 +284,7 @@ class AccountManagerFrame(ttk.Frame):
     def on_open_trading_view(self, meta):
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.delete(0, tk.END)
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.insert(0, str(meta["capital"]))
-        self.controller.show_frame(TradingStrategyFrame)
+        self.controller.show_main_frame(TradingStrategyFrame, "trading")
         
     def open_account(self, name):
         self.accounts[name]["last_opened"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
@@ -364,12 +415,7 @@ class TradingStrategyFrame(ttk.Frame):
             return candle_data
         except requests.exceptions.HTTPError as err:
             messagebox.showerror(f"HTTP error occurered {err}")           
-    
-    def back_to_accounts(self):
-        if self.chart_frame.live_switch_var.get():
-            self.chart_frame.live_switch_var.set(False)
-            self.chart_frame.toggle_live_mode()
-        self.controller.show_frame(AccountManagerFrame)
+
     
     def is_input_valid_float(self, input, name):
         try:
@@ -445,7 +491,7 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.populate_result_text(self.get_result_summary(backtest_results))   
                 backtest_frame.title_label.configure(text=f"Backtest Results for {self.general_tab.stock_input.get().strip()}")
                 backtest_frame.results_chart.update_chart() 
-            self.controller.show_frame(BackTestingResultsFrame)
+            self.controller.show_main_frame(BackTestingResultsFrame, "performance")
         except ValueError as err:
             messagebox.showerror(f"Error: {err}")
    
@@ -472,7 +518,7 @@ class CandlestickChartFrame(ttk.Frame):
             offvalue=False
         )
         self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
-        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 960, height = 540)
+        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 880, height = 495)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
         self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
         self.time_interval = "OneDay"
@@ -707,7 +753,7 @@ class BackTestingResultsFrame(ttk.Frame):
         )     
           
     def run_new_test(self):
-        self.controller.show_frame(TradingStrategyFrame)
+        self.controller.show_main_frame(TradingStrategyFrame, "trading")
 
 class ResultChartFrame(ttk.Frame):
     def __init__(self, parent, controller, backtest_results, result_var , show_label = False):
