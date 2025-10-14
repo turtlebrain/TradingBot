@@ -414,7 +414,7 @@ class TradingStrategyFrame(ttk.Frame):
                 chart_frame.update_chart(candle_data_pd)
             return candle_data
         except requests.exceptions.HTTPError as err:
-            messagebox.showerror(f"HTTP error occurered {err}")           
+            messagebox.showerror("Error", f"HTTP error occurered {err}")           
 
     
     def is_input_valid_float(self, input, name):
@@ -422,7 +422,7 @@ class TradingStrategyFrame(ttk.Frame):
             float(input)
             return True
         except ValueError:
-            messagebox.showerror(f"Please enter a valid {name}")
+            messagebox.showerror("Error", f"Please enter a valid {name}")
             return False
             
     def get_result_summary(self, results):
@@ -493,7 +493,7 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.update_chart() 
             self.controller.show_main_frame(BackTestingResultsFrame, "performance")
         except ValueError as err:
-            messagebox.showerror(f"Error: {err}")
+            messagebox.showerror("Error", err)
    
 class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
