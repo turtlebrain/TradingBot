@@ -10,10 +10,11 @@ class QuestradeStreamer:
     def __init__(self, access_token, api_server):
         self.access_token = access_token
         self.api_server = api_server
+        self.symbol_id = ''
         self.ws = None
         self.thread = None
         self.connected = False
-        self.candle_aggregator = tick_processor.CandleAggregator(time_interval='OneMinute')  # 1-minute candles
+        self.candle_aggregator = None 
         
     def _on_open(self, ws):
         print("WebSocket connection opened.")
@@ -47,6 +48,7 @@ class QuestradeStreamer:
         Ask Questrade REST API for a streaming URL for given symbol.
         Returns a wss:// URL you can use with WebSocketApp.
         """
+        self.symbol_id = symbol_id
         url = f"{self.api_server}v1/markets/quotes"
         
         params = {
@@ -73,6 +75,8 @@ class QuestradeStreamer:
         if self.connected:
             print("WebSocket is already connected.")
             return
+        if self.symbol_id is not symbol_id:
+            self.candle_aggregator = tick_processor.CandleAggregator(time_interval='OneMinute') # 1-minute candles
         stream_url = self.get_stream_url(symbol_id)
         self.ws = websocket.WebSocketApp(
             stream_url,
