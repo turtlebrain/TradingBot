@@ -19,6 +19,7 @@ import datetime
 import threading
 import tick_streamer as qt_stream
 import strategy_tree_builder as stb
+from persistence import save_accounts, load_accounts
 
 
 class TradingBotApp:
@@ -216,7 +217,7 @@ class AccountManagerFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.accounts = {}
+        self.accounts = pd.DataFrame(columns=["created", "last_opened", "capital"])
         
         self.list_frame = ttk.Frame(self)
         self.list_frame.pack(fill=tk.BOTH, expand=True)
@@ -229,26 +230,26 @@ class AccountManagerFrame(ttk.Frame):
         for widget in self.list_frame.winfo_children():
             widget.destroy()
 
-        if not self.accounts:
+        if self.accounts.empty:
             ttk.Label(self.list_frame, text="No accounts yet. Create one to get started.").pack()
             return
 
-        for name, meta in self.accounts.items():
+        for meta in self.accounts.itertuples():
             row = ttk.Frame(self.list_frame, bootstyle="light")  
             row.pack(fill="x", pady=2, padx=5, ipady=5, ipadx=5)
 
-            def open(n=name):
+            def open(n=meta.Index):
                 self.open_account(n)
 
             # Bind click to row and all children
             row.bind("<Button-1>", lambda e: open())
         
             # Create widgets
-            name_lbl = ttk.Label(row, text=name, font=("Poppins", 12, "bold"))
-            created_lbl = ttk.Label(row, text=f"Created: {meta['created']}", foreground="gray")
-            opened_lbl = ttk.Label(row, text=f"Last opened: {meta['last_opened']}", foreground="gray")
-            rename_btn = ttk.Button(row, text="Rename", width = 8, bootstyle=INFO, command=lambda n=name: self.rename_account(n))
-            delete_btn = ttk.Button(row, text="Delete", width = 8, bootstyle=DANGER, command=lambda n=name: self.delete_account(n))
+            name_lbl = ttk.Label(row, text=meta.Index, font=("Poppins", 12, "bold"))
+            created_lbl = ttk.Label(row, text=f"Created: {meta.created}", foreground="gray")
+            opened_lbl = ttk.Label(row, text=f"Last opened: {meta.last_opened}", foreground="gray")
+            rename_btn = ttk.Button(row, text="Rename", width = 8, bootstyle=INFO, command=lambda n=meta.index: self.rename_account(n))
+            delete_btn = ttk.Button(row, text="Delete", width = 8, bootstyle=DANGER, command=lambda n=meta.index: self.delete_account(n))
 
             name_lbl.pack(side="left")
             created_lbl.pack(side="left", padx=10)
@@ -272,14 +273,13 @@ class AccountManagerFrame(ttk.Frame):
                 return
     
         # Create account metadata
-        self.accounts[name]={
-            "created": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M"),
-            "last_opened": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M"),
-            "capital": capital
-        }
+        created = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
+        last_opened = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
+        self.accounts.loc[name]=[created, last_opened, capital]
+
         self.render_accounts()
         # Automatically goes to trading view after being created
-        self.on_open_trading_view(self.accounts[name])
+        self.on_open_trading_view(self.accounts.loc[name])
             
     def on_open_trading_view(self, meta):
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.delete(0, tk.END)
@@ -287,18 +287,18 @@ class AccountManagerFrame(ttk.Frame):
         self.controller.show_main_frame(TradingStrategyFrame, "trading")
         
     def open_account(self, name):
-        self.accounts[name]["last_opened"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
-        self.on_open_trading_view(self.accounts[name])
+        self.accounts.at[name, "last_opened"] = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M")
+        self.on_open_trading_view(self.accounts.loc[name])
     
     def rename_account(self, name):
         new_name = simpledialog.askstring("Rename Account", "Enter new name:")
-        if new_name and new_name not in self.accounts:
-            self.accounts[new_name] = self.accounts.pop(name)
+        if new_name and new_name not in self.accounts.index:
+            self.accounts = self.accounts.rename(index={name: new_name})
             self.render_accounts()
     
     def delete_account(self, name):
         if messagebox.askyesno("Delete Account", f"Delete {name}?"):
-            del self.accounts[name]
+            self.accounts.drop(name, inplace=True)
             self.render_accounts()
         
 class AccountDialog:
@@ -486,6 +486,7 @@ class TradingStrategyFrame(ttk.Frame):
             )
             if not backtest_results.empty:
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
+                backtest_frame.backtest_results = backtest_results
                 backtest_frame.populate_backtest_display(backtest_results)
                 backtest_frame.results_chart.results = backtest_results      
                 backtest_frame.populate_result_text(self.get_result_summary(backtest_results))   
@@ -605,7 +606,8 @@ class BackTestingResultsFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-
+        self.backtest_results = pd.DataFrame()
+        
         col_headers = [
             'price', 'signal', 'shares', 'cash', 'equity', 'market_value',
             'order', 'exec_price', 'stop_loss', 'fees', 'trade_side', 'pnl',
@@ -675,7 +677,7 @@ class BackTestingResultsFrame(ttk.Frame):
         self.title_label.grid(row=0, column=0, columnspan=2, pady=2)
 
         # Chart area
-        self.results_chart = ResultChartFrame(main_area, controller, pd.DataFrame(), self.result_var)
+        self.results_chart = ResultChartFrame(main_area, controller, self.backtest_results, self.result_var)
         self.results_chart.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
 
         # Treeview
