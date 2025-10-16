@@ -248,8 +248,8 @@ class AccountManagerFrame(ttk.Frame):
             name_lbl = ttk.Label(row, text=meta.Index, font=("Poppins", 12, "bold"))
             created_lbl = ttk.Label(row, text=f"Created: {meta.created}", foreground="gray")
             opened_lbl = ttk.Label(row, text=f"Last opened: {meta.last_opened}", foreground="gray")
-            rename_btn = ttk.Button(row, text="Rename", width = 8, bootstyle=INFO, command=lambda n=meta.index: self.rename_account(n))
-            delete_btn = ttk.Button(row, text="Delete", width = 8, bootstyle=DANGER, command=lambda n=meta.index: self.delete_account(n))
+            rename_btn = ttk.Button(row, text="Rename", width = 8, bootstyle=INFO, command=lambda n=meta.Index: self.rename_account(n))
+            delete_btn = ttk.Button(row, text="Delete", width = 8, bootstyle=DANGER, command=lambda n=meta.Index: self.delete_account(n))
 
             name_lbl.pack(side="left")
             created_lbl.pack(side="left", padx=10)
