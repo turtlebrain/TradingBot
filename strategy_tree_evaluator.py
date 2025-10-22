@@ -49,10 +49,11 @@ def evaluate_node(node: dict, data: pd.DataFrame, side: str) -> pd.DataFrame:
         result_df = evaluate_node(members[0], data, side)
 
         # Fold the rest using the group’s logic
-        for m in members[1:]:
-            next_df = evaluate_node(m, data, side)
+        for i in range(1, len(members)):
+            op = members[i - 1]["logic"] # operator of previous row
+            next_df = evaluate_node(members[i], data, side)
             result_series = pd.Series(
-                combine_series(result_df[series_name], next_df[series_name], node["logic"], side),
+                combine_series(result_df[series_name], next_df[series_name], op, side),
                 index=data.index,
                 name="signal",
             )
