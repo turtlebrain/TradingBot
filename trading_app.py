@@ -487,8 +487,7 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.backtest_results = backtest_results
                 backtest_frame.populate_backtest_display(backtest_results)
                 backtest_frame.results_chart.results = backtest_results      
-                backtest_frame.populate_result_text(self.get_result_summary(backtest_results))   
-                backtest_frame.title_label.configure(text=f"Backtest Results for {self.general_tab.stock_input.get().strip()}")
+                backtest_frame.result_settings_tab.populate_result_text(self.get_result_summary(backtest_results))   
                 backtest_frame.results_chart.update_chart() 
             self.controller.show_main_frame(BackTestingResultsFrame, "performance")
         except ValueError as err:
@@ -606,81 +605,37 @@ class BackTestingResultsFrame(ttk.Frame):
         self.controller = controller
         self.backtest_results = pd.DataFrame()
         
-        col_headers = [
+        result_headers = [
             'price', 'signal', 'shares', 'cash', 'equity', 'market_value',
             'order', 'exec_price', 'stop_loss', 'fees', 'trade_side', 'pnl',
             'cum_max_equity', 'drawdown', 'returns'
         ]
-
-        # Track selected series for multi-line plotting
-        self.selected_series = []
 
         # --- Layout config ---
         self.columnconfigure(0, weight=0)   # sidebar fixed width
         self.columnconfigure(1, weight=1)   # main area expands
         self.rowconfigure(0, weight=1)
 
-        # --- Sidebar ---
-        sidebar = tk.Frame(self, bg="#f0f0f0", width=200)
-        sidebar.grid(row=0, column=0, sticky="ns")
-        sidebar.grid_propagate(False)
-
-        # Row 0: OptionMenu + Add button
-        self.result_var = tk.StringVar(value=col_headers[0])
-        opt_frame = tk.Frame(sidebar, bg="#f0f0f0")
-        opt_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
-
-        opt = ttk.Combobox(opt_frame, values=col_headers, textvariable=self.result_var, state="readonly")
-        opt.pack(side="left", fill="x", expand=True)
-
-        add_btn = ttk.Button(opt_frame, text="➕", width=2, bootstyle=SUCCESS, command=self.add_series)
-        add_btn.pack(side="left", padx=(5, 0))
-
-        # Row 1: Selected series list
-        self.series_frame = tk.Frame(sidebar, bg="#f0f0f0")
-        self.series_frame.grid(row=1, column=0, sticky="ns", padx=5)
-
-        # Show labels toggle
-        self.show_label_var = tk.BooleanVar(value=False)
-        self.show_label_toggle = ttk.Checkbutton(
-            sidebar,
-            text="Show data labels",
-            variable=self.show_label_var,
-            command=self.toggle_show_label
-        )
-        self.show_label_toggle.grid(row=2, column=0, padx=5, pady=5, sticky="ns")
-
-        # Result summary (Net Profit, Final Equity, %return)
-        self.result_summary = tk.Label(sidebar, text ="")
-        self.result_summary.grid(row = 3, column = 0, sticky="ns")
-        results_summary = { 
-            "final_equity"  :   0,
-            "profits"       :   0,
-            "returns"       :   0,
-            "sharpe_ratio"  :   0
-        }
-        self.result_summary_var =  self.populate_result_text(results_summary)
-        
-        # Run new test button
-        self.run_new_test_button = ttk.Button(sidebar, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=4, column=0, padx=5, pady=5, sticky="ns")
-        
+        # --- Result Settings Tab ---
+        notebook = ttk.Notebook(self, style="TNotebook")
+        notebook.grid(row=0, column=0, sticky="ns")  # fill vertically
+          
+        self.result_settings_tab = self.controller.create_tab(notebook, "Result Settings", 
+                                   lambda parent: ResultSettingsCollapsibleFrame(parent, self.controller, result_headers))
+            
         # --- Main area ---
         main_area = tk.Frame(self, bg="white")
         main_area.grid(row=0, column=1, sticky="nsew")
         main_area.grid_columnconfigure(0, weight=1)
         main_area.grid_rowconfigure(1, weight=1)
-        
-        self.title_label = tk.Label(main_area, text=f"Backtest results", bg="white", font=("Poppins", 14))
-        self.title_label.grid(row=0, column=0, columnspan=2, pady=2)
 
         # Chart area
-        self.results_chart = ResultChartFrame(main_area, controller, self.backtest_results, self.result_var)
-        self.results_chart.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        self.results_chart = ResultChartFrame(main_area, controller, self.backtest_results, self.result_settings_tab.result_var)
+        self.results_chart.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
         # Treeview
-        self.backtest_display = ttk.Treeview(main_area, columns=col_headers, show="headings")
-        for col in col_headers:
+        self.backtest_display = ttk.Treeview(main_area, columns=result_headers, show="headings")
+        for col in result_headers:
             self.backtest_display.heading(col, text=col)
             self.backtest_display.column(col, width=100, anchor="center")
         self.backtest_display.grid(row=2, column=0, padx=5, pady=5, sticky="nsew")
@@ -698,62 +653,13 @@ class BackTestingResultsFrame(ttk.Frame):
         self.grid_columnconfigure(1, weight=1)
 
         self.controller.add_outer_rows_and_cols(main_area)
-
-    # --- Series management ---
-    def add_series(self):
-        series = self.result_var.get()
-        if series not in self.selected_series:
-            self.selected_series.append(series)
-            self.refresh_series_list()
-            self.results_chart.update_chart()
-
-    def remove_series(self, series):
-        if series in self.selected_series:
-            self.selected_series.remove(series)
-            self.refresh_series_list()
-            self.results_chart.update_chart()
-
-    def refresh_series_list(self):
-        for widget in self.series_frame.winfo_children():
-            widget.destroy()
-
-        for s in self.selected_series:
-            row = tk.Frame(self.series_frame, bg="#f0f0f0")
-            row.pack(fill="x", pady=1)
-
-            lbl = tk.Label(row, text=s, anchor="w", bg="#f0f0f0")
-            lbl.pack(side="left", fill="x", expand=True)
-
-            rm_btn = ttk.Button(row, text="❌", width=2, bootstyle= DANGER,
-                                command=lambda name=s: self.remove_series(name))
-            rm_btn.pack(side="right")
-
     
-    def toggle_show_label(self):  
-        if self.show_label_var.get():
-            self.results_chart.show_label = True
-        else:
-            self.results_chart.show_label = False
-        self.results_chart.update_chart()
-        
     def populate_backtest_display(self, dataframe):
         for row in self.backtest_display.get_children():
             self.backtest_display.delete(row)
         for _, row in dataframe.iterrows():
             self.backtest_display.insert("", "end", values=list(row))
-    
-    def populate_result_text(self, results):
-        self.result_summary.config(
-            text=(
-                f"Final Equity ($): {results['final_equity']}\n"
-                f"Profits ($): {results['profits']}\n"
-                f"Returns (%): {results['returns']}\n"
-                f"Sharpe Ratio: {results['sharpe_ratio']}"
-            )
-        )     
-          
-    def run_new_test(self):
-        self.controller.show_main_frame(TradingStrategyFrame, "trading")
+ 
 
 class ResultChartFrame(ttk.Frame):
     def __init__(self, parent, controller, backtest_results, result_var , show_label = False):
@@ -763,19 +669,34 @@ class ResultChartFrame(ttk.Frame):
         self.results = backtest_results
         self.result_var = result_var
         self.result_var.trace_add("write", self.update_chart)    
+        # Show labels toggle
+        self.show_label_var = tk.BooleanVar(value=False)
+        self.show_label_toggle = ttk.Checkbutton(
+            self,
+            text="Show data labels",
+            variable=self.show_label_var,
+            command=self.toggle_show_label
+        )
+        self.show_label_toggle.grid(row=0, column=0, sticky="nsew")
         self.create_chart(self.show_label)
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(0, weight=1)
-              
+        self.grid_rowconfigure(1, weight=1)
+        
+    def toggle_show_label(self):  
+        if self.show_label_var.get():
+            self.show_label = True
+        else:
+            self.show_label = False
+        self.update_chart()       
+           
     def reset_chart(self):
-        # Remove any previous chart widget cleanly
-        for child in self.winfo_children():
-            child.destroy()
-        self.chart = None
+        if self.chart is not None:
+            self.chart.destroy()
+            self.chart = None
     
     def create_chart(self, show_labels=False):
         self.chart = cftk_wrap.LineChartNoLabels(self, width=800, show_labels=show_labels, height=450)
-        self.chart.grid(row=0, column=0, sticky="nsew")
+        self.chart.grid(row=1, column=0, sticky="nsew")
         return self.chart
     
     def update_chart(self, *args):
@@ -788,7 +709,7 @@ class ResultChartFrame(ttk.Frame):
         self.reset_chart()
         chart = self.create_chart(show_labels=self.show_label)
 
-        series_list = self.controller.frames[BackTestingResultsFrame].selected_series
+        series_list = self.controller.frames[BackTestingResultsFrame].result_settings_tab.selected_series
 
         if series_list:
             datasets = []
@@ -862,7 +783,7 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
             bootstyle="success",
             dateformat="%Y-%m-%d"
         )
-        self.start_date_input.set_date(datetime.date(2025, 8, 1))
+        self.start_date_input.set_date(datetime.date(2025, 9, 1))
         self.start_date_input.pack(fill="x", pady=2)
 
         # End date
@@ -874,7 +795,7 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
             bootstyle="success",
             dateformat="%Y-%m-%d"
         )
-        self.end_date_input.set_date(datetime.date(2025, 8, 31))
+        self.end_date_input.set_date(datetime.date(2025, 9, 30))
         self.end_date_input.pack(fill="x", pady=2)
 
 
@@ -969,7 +890,86 @@ class ExecutionCollasibleFrame(CollapsibleFrame):
     def remove_stop_loss_widgets(self):
         for widget in self.stop_loss_widgets:
             widget.destroy()
+
+class ResultSettingsCollapsibleFrame(CollapsibleFrame):
+    def __init__(self, parent, controller, result_headers):
+        super().__init__(parent, title="Result Settings")
+        self.controller = controller
+        # Track selected series for multi-line plotting
+        self.selected_series = []
         
+        self.result_var = tk.StringVar(value=result_headers[0])
+        opt_frame = tk.Frame(self.content, bg="#f0f0f0")
+        opt_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
+
+        opt = ttk.Combobox(opt_frame, values=result_headers, textvariable=self.result_var, state="readonly")
+        opt.pack(side="left", fill="x", expand=True)
+
+        add_btn = ttk.Button(opt_frame, text="➕", width=2, bootstyle=SUCCESS, command=self.add_series)
+        add_btn.pack(side="left", padx=(5, 0))
+
+        # Row 1: Selected series list
+        self.series_frame = tk.Frame(self.content, bg="#f0f0f0")
+        self.series_frame.grid(row=1, column=0, sticky="ns", padx=5)
+
+        # Result summary (Net Profit, Final Equity, %return)
+        self.result_summary = tk.Label(self.content, text ="")
+        self.result_summary.grid(row = 2, column = 0, sticky="ns")
+        results_summary = { 
+            "final_equity"  :   0,
+            "profits"       :   0,
+            "returns"       :   0,
+            "sharpe_ratio"  :   0
+        }
+        self.result_summary_var =  self.populate_result_text(results_summary)
+        
+        # Run new test button
+        self.run_new_test_button = ttk.Button(self.content, text="Run New Test", command=self.run_new_test)
+        self.run_new_test_button.grid(row=3, column=0, padx=5, pady=5, sticky="ns")
+        
+    # --- Series management ---
+    def add_series(self):
+        series = self.result_var.get()
+        if series not in self.selected_series:
+            self.selected_series.append(series)
+            self.refresh_series_list()
+            self.controller.frames[BackTestingResultsFrame].results_chart.update_chart()
+
+    def remove_series(self, series):
+        if series in self.selected_series:
+            self.selected_series.remove(series)
+            self.refresh_series_list()
+            self.controller.frames[BackTestingResultsFrame].results_chart.update_chart()
+
+    def refresh_series_list(self):
+        for widget in self.series_frame.winfo_children():
+            widget.destroy()
+
+        for s in self.selected_series:
+            row = tk.Frame(self.series_frame, bg="#f0f0f0")
+            row.pack(fill="x", pady=1)
+
+            lbl = tk.Label(row, text=s, anchor="w", bg="#f0f0f0")
+            lbl.pack(side="left", fill="x", expand=True)
+
+            rm_btn = ttk.Button(row, text="❌", width=2, bootstyle= DANGER,
+                                command=lambda name=s: self.remove_series(name))
+            rm_btn.pack(side="right")
+    
+    # --- Utility functions ---   
+    def populate_result_text(self, results):
+        self.result_summary.config(
+            text=(
+                f"Final Equity ($): {results['final_equity']}\n"
+                f"Profits ($): {results['profits']}\n"
+                f"Returns (%): {results['returns']}\n"
+                f"Sharpe Ratio: {results['sharpe_ratio']}"
+            )
+        )     
+          
+    def run_new_test(self):
+        self.controller.show_main_frame(TradingStrategyFrame, "trading")
+           
 if __name__ == '__main__':
     root = tk.Tk()
     app = TradingBotApp(root)
