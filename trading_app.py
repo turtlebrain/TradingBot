@@ -239,11 +239,8 @@ class AccountManagerFrame(ttk.Frame):
             row = ttk.Frame(self.list_frame, bootstyle="light")  
             row.pack(fill="x", pady=2, padx=5, ipady=5, ipadx=5)
 
-            def open(n=account_id):
-                self.open_account(n)
-
             # Bind click to row and all children
-            row.bind("<Button-1>", lambda e: open())
+            row.bind("<Button-1>", lambda e, n = account_id: self.open_account(n))
         
             # Create widgets
             name_lbl = ttk.Label(row, text=meta["name"], font=("Poppins", 12, "bold"))
@@ -260,7 +257,7 @@ class AccountManagerFrame(ttk.Frame):
 
             # Bind click to labels too
             for widget in [name_lbl, created_lbl, opened_lbl]:
-                widget.bind("<Button-1>", lambda e: open())
+                widget.bind("<Button-1>", lambda e, n = account_id: self.open_account(n))
             
     def on_open_trading_view(self, meta):
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.delete(0, tk.END)
