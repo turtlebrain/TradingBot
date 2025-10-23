@@ -6,6 +6,7 @@ import json
 import ttkbootstrap as ttkb
 from ttkbootstrap.widgets import DateEntry
 from ttkbootstrap.constants import *
+from ttkbootstrap.scrolled import ScrolledFrame
 import trading_strategies as strategies
 import pandas as pd
 import tkinter.font as tkFont
@@ -19,8 +20,7 @@ import datetime
 import threading
 import tick_streamer as qt_stream
 import strategy_tree_builder as stb
-from persistence import create_account, open_account, rename_account, delete_account, load_accounts
-
+import persistence as persist
 
 
 class TradingBotApp:
@@ -30,6 +30,9 @@ class TradingBotApp:
         self.root.geometry("1440x810")
         self.system_running = False
 
+        # Initialize database
+        persist.init_db()
+        
         # Change default font for all widgets to Poppins
         default_font = tkFont.nametofont("TkDefaultFont")
         default_font.configure(family="Poppins")
@@ -218,7 +221,7 @@ class AccountManagerFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.accounts = load_accounts()
+        self.accounts = persist.load_accounts()
         
         self.list_frame = ttk.Frame(self)
         self.list_frame.pack(fill=tk.BOTH, expand=True)
@@ -263,8 +266,12 @@ class AccountManagerFrame(ttk.Frame):
                 widget.bind("<Button-1>", lambda e: open())
             
     def on_open_trading_view(self, meta):
+        # --- This stuff here is temporary and needs to be refactored
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.delete(0, tk.END)
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.insert(0, str(meta["capital"]))
+        # --- end of stuff ---
+        self.controller.frames[TradingStrategyFrame].active_account = meta      
+        self.controller.frames[BackTestingResultsFrame].render_trade_history()
         self.controller.show_main_frame(TradingStrategyFrame, "trading")
         
     def create_account(self):
@@ -277,26 +284,26 @@ class AccountManagerFrame(ttk.Frame):
                 messagebox.showerror("Error", f"Account '{name}' already exists.")
                 return
 
-            meta = create_account(name, capital)   # persistence handles insert + reload
-            self.accounts = load_accounts()
+            meta = persist.create_account(name, capital)   # persistence handles insert + reload
+            self.accounts = persist.load_accounts()
             self.render_accounts()
             self.on_open_trading_view(meta)
 
     def open_account(self, account_id):
-        meta = open_account(account_id)            # persistence handles update + reload
-        self.accounts = load_accounts()
+        meta = persist.open_account(account_id)            # persistence handles update + reload
+        self.accounts = persist.load_accounts()
         self.on_open_trading_view(meta)
 
     def rename_account(self, account_id):
         new_name = simpledialog.askstring("Rename Account", "Enter new name:")
         if new_name and new_name not in self.accounts["name"].values:
-            meta = rename_account(account_id, new_name)
-            self.accounts = load_accounts()
+            meta = persist.rename_account(account_id, new_name)
+            self.accounts = persist.load_accounts()
             self.render_accounts()
 
     def delete_account(self, account_id):
         if messagebox.askyesno("Delete Account", f"Delete {self.accounts.loc[account_id, 'name']}?"):
-            self.accounts = delete_account(account_id)  # persistence handles delete + reload
+            self.accounts = persist.delete_account(account_id)  # persistence handles delete + reload
             self.render_accounts()
         
 class AccountDialog:
@@ -333,6 +340,7 @@ class TradingStrategyFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
+        self.active_account = None
         
         # --- Sidebar + main content container ---
         # Use grid for the whole TradingStrategyFrame
@@ -422,22 +430,14 @@ class TradingStrategyFrame(ttk.Frame):
         except ValueError:
             messagebox.showerror("Error", f"Please enter a valid {name}")
             return False
-            
-    def get_result_summary(self, results):
-        result_summary = {}
-        if not results.empty:
-            initial_equity = results['equity'].iloc[0]
-            result_summary['final_equity'] = round(results['equity'].iloc[-1], 2)
-            result_summary['profits'] = round(result_summary['final_equity'] - initial_equity, 2)
-            result_summary['returns'] = round((result_summary['profits'] / initial_equity) * 100, 2)
-            time_frame = self.chart_frame.time_interval
-            if self.chart_frame.live_switch_var.get():
-                time_frame = self.controller.frames[AuthFrame].streamer.candle_aggregator.time_interval
-            result_summary['sharpe_ratio'] = round(engine.compute_sharpe_ratio(returns = results['returns'], 
-                                                                               timeframe = time_frame), 2)
-        return result_summary
+
     
     def run_backtest(self):
+        # Start a new session
+        acc_id = int(self.active_account.name)
+        session_id = persist.start_trade_session(acc_id)
+        
+        # Get Backtest parameters
         candle_data = {}
         if not self.chart_frame.live_switch_var.get():
             candle_data = self.search(show_output=False)
@@ -486,19 +486,26 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
                 backtest_frame.backtest_results = backtest_results
                 backtest_frame.populate_backtest_display(backtest_results)
-                backtest_frame.results_chart.results = backtest_results      
-                backtest_frame.populate_result_text(self.get_result_summary(backtest_results))   
-                backtest_frame.title_label.configure(text=f"Backtest Results for {self.general_tab.stock_input.get().strip()}")
+                backtest_frame.results_chart.results = backtest_results
+                result_settings_tab = backtest_frame.result_settings_tab    
+                result_settings_tab.populate_result_text(result_settings_tab.get_result_summary(backtest_results))    
                 backtest_frame.results_chart.update_chart() 
+                # Persist results as a trade stream and add to trade history
+                persist.insert_trade_stream(session_id, backtest_results)
+                
             self.controller.show_main_frame(BackTestingResultsFrame, "performance")
         except ValueError as err:
             messagebox.showerror("Error", err)
+        finally:
+            persist.end_trade_session(session_id=session_id) 
+            backtest_frame.render_trade_history()   
+        return session_id
    
 class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.live_switch_var = tk.BooleanVar(value=False)  # OFF by default
+        self.live_switch_var = tk.BooleanVar(value=False)  
         self.live_switch = ttkb.Checkbutton(
             self, 
             text="Live mode", 
@@ -619,55 +626,25 @@ class BackTestingResultsFrame(ttk.Frame):
         self.columnconfigure(0, weight=0)   # sidebar fixed width
         self.columnconfigure(1, weight=1)   # main area expands
         self.rowconfigure(0, weight=1)
-
-        # --- Sidebar ---
-        sidebar = tk.Frame(self, bg="#f0f0f0", width=200)
-        sidebar.grid(row=0, column=0, sticky="ns")
-        sidebar.grid_propagate(False)
-
-        # Row 0: OptionMenu + Add button
-        self.result_var = tk.StringVar(value=col_headers[0])
-        opt_frame = tk.Frame(sidebar, bg="#f0f0f0")
-        opt_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
-
-        opt = ttk.Combobox(opt_frame, values=col_headers, textvariable=self.result_var, state="readonly")
-        opt.pack(side="left", fill="x", expand=True)
-
-        add_btn = ttk.Button(opt_frame, text="➕", width=2, bootstyle=SUCCESS, command=self.add_series)
-        add_btn.pack(side="left", padx=(5, 0))
-
-        # Row 1: Selected series list
-        self.series_frame = tk.Frame(sidebar, bg="#f0f0f0")
-        self.series_frame.grid(row=1, column=0, sticky="ns", padx=5)
-
-        # Show labels toggle
-        self.show_label_var = tk.BooleanVar(value=False)
-        self.show_label_toggle = ttk.Checkbutton(
-            sidebar,
-            text="Show data labels",
-            variable=self.show_label_var,
-            command=self.toggle_show_label
-        )
-        self.show_label_toggle.grid(row=2, column=0, padx=5, pady=5, sticky="ns")
-
-        # Result summary (Net Profit, Final Equity, %return)
-        self.result_summary = tk.Label(sidebar, text ="")
-        self.result_summary.grid(row = 3, column = 0, sticky="ns")
-        results_summary = { 
-            "final_equity"  :   0,
-            "profits"       :   0,
-            "returns"       :   0,
-            "sharpe_ratio"  :   0
-        }
-        self.result_summary_var =  self.populate_result_text(results_summary)
+        self.rowconfigure(1, weight=1)
         
-        # Run new test button
-        self.run_new_test_button = ttk.Button(sidebar, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=4, column=0, padx=5, pady=5, sticky="ns")
+        # --- Result Settings Tab ---
+        notebook = ttk.Notebook(self, style="TNotebook")
+        notebook.grid(row=0, column=0, sticky="nsew")  
+          
+        self.result_settings_tab = self.controller.create_tab(notebook, "Result Settings", 
+                                   lambda parent: ResultSettingsCollapsibleFrame(parent, self.controller, result_headers))
+        
+        # --- Trade Session History Panel ---
+        self.ts_history_frame = tk.Frame(self)
+        self.ts_history_frame.grid(row=1, column=0, sticky="ns")
+        self.trade_history = ScrolledFrame(self.ts_history_frame, autohide=True, bootstyle="round")
+        self.trade_history.pack(fill="y", expand=True)  
+        self.render_trade_history()
         
         # --- Main area ---
         main_area = tk.Frame(self, bg="white")
-        main_area.grid(row=0, column=1, sticky="nsew")
+        main_area.grid(row=0, column=1, rowspan = 2, sticky="nsew")
         main_area.grid_columnconfigure(0, weight=1)
         main_area.grid_rowconfigure(1, weight=1)
         
@@ -742,18 +719,51 @@ class BackTestingResultsFrame(ttk.Frame):
         for _, row in dataframe.iterrows():
             self.backtest_display.insert("", "end", values=list(row))
     
-    def populate_result_text(self, results):
-        self.result_summary.config(
-            text=(
-                f"Final Equity ($): {results['final_equity']}\n"
-                f"Profits ($): {results['profits']}\n"
-                f"Returns (%): {results['returns']}\n"
-                f"Sharpe Ratio: {results['sharpe_ratio']}"
-            )
-        )     
-          
-    def run_new_test(self):
-        self.controller.show_main_frame(TradingStrategyFrame, "trading")
+    def on_session_click(self, session_id):
+        # Load trade stream for session id
+        trade_stream = persist.load_trade_stream(session_id=session_id)
+        # Populate tree view
+        self.populate_backtest_display(trade_stream)
+        # Update chart 
+        self.results_chart.results = trade_stream      
+        self.result_settings_tab.populate_result_text(self.result_settings_tab.get_result_summary(trade_stream))   
+        self.results_chart.update_chart() 
+        
+    def create_session_card(self, parent, session_id, timestamp):
+        card = tk.Frame(parent, bg="#2e3e4e", padx=10, pady=5)
+        card.pack(fill="x", pady=5)
+
+        lbl_id = tk.Label(card, text=session_id, font=("TkDefaultFont", 12, "bold"),
+                      bg=card["bg"], fg="white")
+        lbl_id.pack(side="left")
+
+        lbl_time = tk.Label(card, text=timestamp, font=("TkDefaultFont", 10),
+                        bg=card["bg"], fg="white")
+        lbl_time.pack(side="right")
+
+        # Bind clicks
+        for widget in (card, lbl_id, lbl_time):
+            widget.bind("<Button-1>", lambda e, sid=session_id: self.on_session_click(sid))
+    
+    def render_trade_history(self):
+        for widget in self.trade_history.winfo_children():
+            widget.destroy()
+
+        # Only render if an account is active
+        active_acc = self.controller.frames[TradingStrategyFrame].active_account
+        if active_acc is None:
+            return
+
+        acc_id = int(active_acc.name)  # account_id is the Series.name
+        sessions = persist.load_trade_sessions(acc_id)
+
+        for sid, data in sessions.iterrows():
+            # Format timestamps
+            ended = data["ended_at"] 
+
+            # Create a clickable card/button for each session
+            self.create_session_card(self.trade_history, sid, ended)
+ 
 
 class ResultChartFrame(ttk.Frame):
     def __init__(self, parent, controller, backtest_results, result_var , show_label = False):
@@ -969,7 +979,101 @@ class ExecutionCollasibleFrame(CollapsibleFrame):
     def remove_stop_loss_widgets(self):
         for widget in self.stop_loss_widgets:
             widget.destroy()
+
+class ResultSettingsCollapsibleFrame(CollapsibleFrame):
+    def __init__(self, parent, controller, result_headers):
+        super().__init__(parent, title="Result Settings")
+        self.controller = controller
+        # Track selected series for multi-line plotting
+        self.selected_series = []
         
+        self.result_var = tk.StringVar(value=result_headers[0])
+        opt_frame = tk.Frame(self.content, bg="#f0f0f0")
+        opt_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
+
+        opt = ttk.Combobox(opt_frame, values=result_headers, textvariable=self.result_var, state="readonly")
+        opt.pack(side="left", fill="x", expand=True)
+
+        add_btn = ttk.Button(opt_frame, text="➕", width=2, bootstyle=SUCCESS, command=self.add_series)
+        add_btn.pack(side="left", padx=(5, 0))
+
+        # Row 1: Selected series list
+        self.series_frame = tk.Frame(self.content, bg="#f0f0f0")
+        self.series_frame.grid(row=1, column=0, sticky="ns", padx=5)
+
+        # Result summary (Net Profit, Final Equity, %return)
+        self.result_summary = tk.Label(self.content, text ="")
+        self.result_summary.grid(row = 2, column = 0, sticky="ns")
+        results_summary = { 
+            "final_equity"  :   0,
+            "profits"       :   0,
+            "returns"       :   0,
+            "sharpe_ratio"  :   0
+        }
+        self.result_summary_var =  self.populate_result_text(results_summary)
+        
+        # Run new test button
+        self.run_new_test_button = ttk.Button(self.content, text="Run New Test", command=self.run_new_test)
+        self.run_new_test_button.grid(row=3, column=0, padx=5, pady=5, sticky="ns")
+        
+    # --- Series management ---
+    def add_series(self):
+        series = self.result_var.get()
+        if series not in self.selected_series:
+            self.selected_series.append(series)
+            self.refresh_series_list()
+            self.controller.frames[BackTestingResultsFrame].results_chart.update_chart()
+
+    def remove_series(self, series):
+        if series in self.selected_series:
+            self.selected_series.remove(series)
+            self.refresh_series_list()
+            self.controller.frames[BackTestingResultsFrame].results_chart.update_chart()
+
+    def refresh_series_list(self):
+        for widget in self.series_frame.winfo_children():
+            widget.destroy()
+
+        for s in self.selected_series:
+            row = tk.Frame(self.series_frame, bg="#f0f0f0")
+            row.pack(fill="x", pady=1)
+
+            lbl = tk.Label(row, text=s, anchor="w", bg="#f0f0f0")
+            lbl.pack(side="left", fill="x", expand=True)
+
+            rm_btn = ttk.Button(row, text="❌", width=2, bootstyle= DANGER,
+                                command=lambda name=s: self.remove_series(name))
+            rm_btn.pack(side="right")
+    
+    # --- Utility functions ---   
+    def populate_result_text(self, results):
+        self.result_summary.config(
+            text=(
+                f"Final Equity ($): {results['final_equity']}\n"
+                f"Profits ($): {results['profits']}\n"
+                f"Returns (%): {results['returns']}\n"
+                f"Sharpe Ratio: {results['sharpe_ratio']}"
+            )
+        )     
+    
+    def get_result_summary(self, results):
+        result_summary = {}
+        if not results.empty:
+            initial_equity = results['equity'].iloc[0]
+            result_summary['final_equity'] = round(results['equity'].iloc[-1], 2)
+            result_summary['profits'] = round(result_summary['final_equity'] - initial_equity, 2)
+            result_summary['returns'] = round((result_summary['profits'] / initial_equity) * 100, 2)
+            chart_frame = self.controller.frames[TradingStrategyFrame].chart_frame
+            time_frame = chart_frame.time_interval
+            if chart_frame.live_switch_var.get():
+                time_frame = self.controller.frames[AuthFrame].streamer.candle_aggregator.time_interval
+            result_summary['sharpe_ratio'] = round(engine.compute_sharpe_ratio(returns = results['returns'], 
+                                                                               timeframe = time_frame), 2)
+        return result_summary
+          
+    def run_new_test(self):
+        self.controller.show_main_frame(TradingStrategyFrame, "trading")
+           
 if __name__ == '__main__':
     root = tk.Tk()
     app = TradingBotApp(root)
