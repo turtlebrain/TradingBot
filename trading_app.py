@@ -26,7 +26,7 @@ import persistence as persist
 class TradingBotApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("AI trading Bot")
+        self.root.title("TradingBot")
         self.root.geometry("1440x810")
         self.system_running = False
 
