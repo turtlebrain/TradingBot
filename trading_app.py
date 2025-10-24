@@ -432,7 +432,7 @@ class TradingStrategyFrame(ttk.Frame):
     def run_backtest(self):
         # Start a new session
         acc_id = int(self.active_account.name)
-        session_id = persist.start_trade_session(acc_id)
+        session_id = persist.start_trade_session(acc_id, "backtest")
         
         # Get Backtest parameters
         candle_data = {}
@@ -683,11 +683,17 @@ class BackTestingResultsFrame(ttk.Frame):
         self.result_settings_tab.populate_result_text(self.result_settings_tab.get_result_summary(trade_stream))   
         self.results_chart.update_chart() 
         
-    def create_session_card(self, parent, session_id, timestamp):
+    def create_session_card(self, parent, session_id, timestamp, stream_type):
         card = tk.Frame(parent, bg="#2e3e4e", padx=10, pady=5)
         card.pack(fill="x", pady=5)
 
-        lbl_id = tk.Label(card, text=session_id, font=("TkDefaultFont", 12, "bold"),
+        def format_session_code(session_id: int, stream_type: str) -> str:
+            prefix = "LV" if stream_type == "live" else "BT"
+            return f"{prefix}-{session_id:03d}"
+        
+        session_code = format_session_code(session_id, stream_type)
+        
+        lbl_id = tk.Label(card, text=session_code, font=("TkDefaultFont", 12, "bold"),
                       bg=card["bg"], fg="white")
         lbl_id.pack(side="left")
 
@@ -710,13 +716,14 @@ class BackTestingResultsFrame(ttk.Frame):
 
         acc_id = int(active_acc.name)  # account_id is the Series.name
         sessions = persist.load_trade_sessions(acc_id)
-
+    
         for sid, data in sessions.iterrows():
             # Format timestamps
             ended = data["ended_at"] 
-
+            # Stream type
+            stream_type = data["stream_type"]
             # Create a clickable card/button for each session
-            self.create_session_card(self.trade_history, sid, ended)
+            self.create_session_card(self.trade_history, sid, ended, stream_type)
  
 
 class ResultChartFrame(ttk.Frame):
