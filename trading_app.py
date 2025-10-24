@@ -267,7 +267,10 @@ class AccountManagerFrame(ttk.Frame):
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.delete(0, tk.END)
         self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.insert(0, str(meta["capital"]))
         # --- end of stuff ---
-        self.controller.frames[TradingStrategyFrame].active_account = meta      
+        self.controller.frames[TradingStrategyFrame].active_account = meta     
+        self.controller.frames[TradingStrategyFrame].chart_frame.candle_chart.clear()
+        self.controller.frames[BackTestingResultsFrame].results_chart.chart.clear()
+        self.controller.frames[BackTestingResultsFrame].clear_backtest_display()
         self.controller.frames[BackTestingResultsFrame].render_trade_history()
         self.controller.show_main_frame(TradingStrategyFrame, "trading")
         
@@ -668,10 +671,13 @@ class BackTestingResultsFrame(ttk.Frame):
         self.controller.add_outer_rows_and_cols(main_area)
     
     def populate_backtest_display(self, dataframe):
-        for row in self.backtest_display.get_children():
-            self.backtest_display.delete(row)
+        self.clear_backtest_display()
         for _, row in dataframe.iterrows():
             self.backtest_display.insert("", "end", values=list(row))
+            
+    def clear_backtest_display(self):
+        for row in self.backtest_display.get_children():
+            self.backtest_display.delete(row)
     
     def on_session_click(self, session_id):
         # Load trade stream for session id
