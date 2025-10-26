@@ -613,7 +613,7 @@ class BackTestingResultsFrame(ttk.Frame):
         self.controller = controller
         self.backtest_results = pd.DataFrame()
         
-        result_headers = [
+        self.result_headers = [
             'price', 'signal', 'shares', 'cash', 'equity', 'market_value',
             'order', 'exec_price', 'stop_loss', 'fees', 'trade_side', 'pnl',
             'cum_max_equity', 'drawdown', 'returns'
@@ -630,7 +630,7 @@ class BackTestingResultsFrame(ttk.Frame):
         notebook.grid(row=0, column=0, sticky="nsew")  
           
         self.result_settings_tab = self.controller.create_tab(notebook, "Result Settings", 
-                                   lambda parent: ResultSettingsCollapsibleFrame(parent, self.controller, result_headers))
+                                   lambda parent: ResultSettingsCollapsibleFrame(parent, self.controller, self.result_headers))
         
         # --- Trade Session History Panel ---
         self.ts_history_frame = tk.Frame(self)
@@ -650,11 +650,9 @@ class BackTestingResultsFrame(ttk.Frame):
         self.results_chart.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
         # Treeview
-        self.backtest_display = ttk.Treeview(main_area, columns=result_headers, show="headings")
-        for col in result_headers:
-            self.backtest_display.heading(col, text=col)
-            self.backtest_display.column(col, width=100, anchor="center")
+        self.backtest_display = ttk.Treeview(main_area, columns=self.result_headers, show="headings")
         self.backtest_display.grid(row=2, column=0, padx=5, pady=5, sticky="nsew")
+        self.populate_backtest_display(self.backtest_results, self.result_headers)
 
         # Scrollbars
         self.scroll_y = ttk.Scrollbar(main_area, orient=tk.VERTICAL, command=self.backtest_display.yview)
@@ -670,10 +668,20 @@ class BackTestingResultsFrame(ttk.Frame):
 
         self.controller.add_outer_rows_and_cols(main_area)
     
-    def populate_backtest_display(self, dataframe):
+    def populate_backtest_display(self, dataframe, result_headers = None):
         self.clear_backtest_display()
+
+        if self.result_headers:
+            result_headers = self.result_headers
+        self.backtest_display["columns"] = result_headers
+        for col in result_headers:
+            self.backtest_display.heading(col, text=col)
+            self.backtest_display.column(col, anchor="center")
+
         for _, row in dataframe.iterrows():
-            self.backtest_display.insert("", "end", values=list(row))
+            values = [row[header] for header in result_headers if header in dataframe.columns]
+            self.backtest_display.insert("", "end", values=values)
+
             
     def clear_backtest_display(self):
         for row in self.backtest_display.get_children():
