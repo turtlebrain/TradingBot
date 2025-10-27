@@ -12,7 +12,7 @@ import pandas as pd
 import tkinter.font as tkFont
 import position_sizing as pos_sz
 import risk_control as risk
-import backtest_engine as engine
+import trading_engine as engine
 import requests 
 import chartforgetk_wrapper as cftk_wrap
 import time
