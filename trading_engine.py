@@ -2,8 +2,122 @@ import pandas as pd
 import numpy as np
 import math
 import strategy_tree_evaluator as ste
+from Data.portfolio_state import PortfolioState
+from Data.trade_record import TradeRecord
 
 engine_tol = 1e-9
+
+def strategy_step(
+    data_row,
+    state: PortfolioState,
+    signals_row: dict,
+    position_sizer_func,
+    position_sizer_param,
+    allow_short: bool,
+    slippage: float,
+    fee_rate: float,
+    fee_min: float,
+    lot_size: int
+) -> tuple[PortfolioState, TradeRecord]:
+    price = data_row["close"]
+    signal = signals_row.get("signal", 0)
+
+    equity = state.cash + state.shares * price
+    fixed_fraction = float(position_sizer_param)
+
+    # Build state dict 
+    sizing_state = {
+        "signal": signal,
+        "price": price,
+        "cash": state.cash,
+        "shares": state.shares,
+        "equity": equity,
+        "allow_short": allow_short,
+        "slippage": slippage,
+        "fee_rate": fee_rate,
+        "fee_min": fee_min,
+        "lot_size": lot_size,
+    }
+
+    # Apply stop-loss: if breached, force a sell signal for sizing
+    if not np.isnan(state.stop_loss) and price < state.stop_loss:
+        sizing_state["signal"] = -1
+
+    order = position_sizer_func(sizing_state, fixed_fraction)
+
+    # Round to lot size
+    if lot_size > 1 and order != 0:
+        if order > 0:
+            order = order - (order % lot_size)
+        else:
+            order = -1 * (order + (-order % lot_size))
+
+    trade_side = ""
+    exec_px = np.nan
+    fees_paid = 0.0
+    filled_qty = 0
+
+    # BUY
+    if order > 0:
+        trade_side = "buy"
+        buy_px = price * (1 + slippage)
+        spendable = max(0, state.cash - (fee_min if fee_rate < 1.0 else 0))
+        max_affordable = math.floor(spendable / (buy_px * (1 + fee_rate))) if fee_rate < 1.0 else 0
+        if lot_size > 1:
+            max_affordable -= (max_affordable % lot_size)
+        qty = max(0, min(order, max_affordable))
+
+        # Recalculate fees on executed notional
+        notional = qty * buy_px
+        fees_paid = max(fee_min, fee_rate * notional) if qty > 0 else 0.0
+        total_cost = notional + fees_paid
+
+        # Final safeguard loop
+        step = lot_size if lot_size > 1 else 1
+        while qty > 0 and (qty * buy_px + max(fee_min, fee_rate * qty * buy_px)) > state.cash:
+            qty -= step
+        notional = qty * buy_px
+        fees_paid = max(fee_min, fee_rate * notional) if qty > 0 else 0.0
+        total_cost = notional + fees_paid
+
+        state.shares += qty
+        state.cash -= total_cost
+        exec_px = buy_px if qty > 0 else np.nan
+        filled_qty = qty
+
+        # Update stop-loss if provided by signals
+        if "stop_loss" in signals_row:
+            state.stop_loss = signals_row.get("stop_loss", np.nan)
+
+    # SELL
+    elif order < 0:
+        trade_side = "sell"
+        sell_px = price * (1 - slippage)
+        qty_requested = -order
+        qty = qty_requested if allow_short else min(qty_requested, max(0, state.shares))
+
+        notional = qty * sell_px
+        fees_paid = max(fee_min, fee_rate * notional) if qty > 0 else 0.0
+        proceeds = notional - fees_paid
+        state.cash += proceeds
+        state.shares -= qty
+        exec_px = sell_px if qty > 0 else np.nan
+        filled_qty = -qty
+        state.stop_loss = np.nan
+
+    # Record
+    equity = state.cash + state.shares * price
+    pnl = equity - state.prev_equity
+    state.prev_equity = equity
+
+    record = TradeRecord(
+        price=price, signal=signal, shares=state.shares, cash=state.cash,
+        equity=equity, market_value=state.shares * price, order=filled_qty,
+        exec_price=exec_px, stop_loss=state.stop_loss, fees=fees_paid,
+        trade_side=(trade_side if filled_qty != 0 else ""), pnl=pnl
+    )
+    return state, record
+
 
 def backtest_strategy(
     data :pd.DataFrame, 
@@ -35,160 +149,40 @@ def backtest_strategy(
     :param lot_size: Minimum tradeable lot size (e.g., 1 for stocks)
     :return: DataFrame with backtest results including equity curve
     """
-    # Generate signals using the provided strategy function
-    candle_data = pd.DataFrame()
-    if data is not None:
-        candle_data = data.copy()
-        if candle_data.empty:
-            raise ValueError("Input data is empty.")
+    if data is None or data.empty:
+        raise ValueError("Input data is empty.")
     if lot_size < 1:
         raise ValueError("lot_size must be at least 1.")
-    shares = 0
-    cash = float(starting_capital)
-    signals = ste.evaluate_strategy(buy_logic, sell_logic, candle_data)
-    # Apply stop-loss function if provided
+
+    signals = ste.evaluate_strategy(buy_logic, sell_logic, data)
     if stop_loss_func is not None:
         signals = stop_loss_func(signals)
-        
-    # Output DataFrame to store backtest results
-    out = {
-        "price": [],
-        "signal": [],
-        "shares": [],
-        "cash": [],
-        "equity": [],
-        "market_value": [],
-        "order": [],
-        "exec_price": [],
-        "stop_loss": [],
-        "fees": [],
-        "trade_side": [],  # 'buy' or 'sell' or ''
-        "pnl": []  # profit and loss from closed trades
-    }
-    # Build state to get order size from position sizer
-    prev_equity = starting_capital
-    stop_loss = np.nan
-    for date, row in data.iterrows():
-        price = row['close']
-        signal = signals.at[date, 'signal'] if date in signals.index else 0
-        equity = cash + shares * price
-        
-        state = {
-            'signal': signal,
-            'price': price,
-            'cash': cash,
-            'shares': shares,
-            'equity': equity,
-            'allow_short': allow_short,
-            'slippage ': slippage,
-            'fee_rate': fee_rate,
-            'fee_min': fee_min,
-            'lot_size': lot_size
-        }
-        # Get order size from position sizer
-        fixed_fraction = float(position_sizer_param)
-        order = position_sizer_func(state, fixed_fraction)
-        # Round to lot size
-        if lot_size > 1 and order != 0:
-            if order > 0:
-                order = order - (order % lot_size)
-            else:
-                order = -1*(order + (-order % lot_size)) #keep order negative for sells
-        
-        trade_side = ""
-        exec_px = np.nan
-        fees_paid = 0
-        trade_side = ''
-      
-        # RISK MANAGEMENT - STOP-LOSS
-        if price < stop_loss:
-            state['signal'] = -1
-            order = position_sizer_func(state, fixed_fraction)
 
-        # BUY ORDER
-        if order > 0:
-            trade_side = "buy"
-            buy_px = price * (1 + slippage)  # buying price including slippage for a buy order
-            if fee_rate < 1.0:
-                spendable = max(0, cash - fee_min)
-                max_affordable = math.floor(spendable / (buy_px * (1 + fee_rate)))
-            else:
-                max_affordable = 0
-            if lot_size > 1:
-                max_affordable = max_affordable - (max_affordable % lot_size)
-                
-            qty = max(0, min(order, max_affordable))
-            
-            # Recalculate exact fees on the executed notional (notional = cost of shares minus fees)
-            notional = qty * buy_px
-            fees_paid = (fee_rate * notional)
-            if fee_min > 0 and qty > 0:
-                fees_paid = max(fee_min, fees_paid)
-            
-            total_cost = notional + fees_paid   
-            if total_cost -  engine_tol > cash:
-                # Final safeguard: if still too expensive due to rounding, reduce by one lot
-                step = lot_size if lot_size > 1 else 1
-                while qty > 0  and (qty * buy_px + max(fee_min, fee_rate * qty * buy_px)) - engine_tol > cash:
-                    qty -= step
-                notional = qty * buy_px
-                fees_paid = max(fee_min, fee_rate * notional) if qty > 0 else 0.0
-                total_cost = notional + fees_paid
-            shares += qty
-            cash -= total_cost 
-            exec_px = buy_px if qty > 0 else np.nan
-            order = qty # actual filled
-            if signals.get('stop_loss') is not None:
-                stop_loss = signals.at[date, 'stop_loss'] if date in signals.index else np.nan
-            
-        # SELL ORDER
-        elif order < 0:
-            trade_side = "sell"
-            sell_px = price * (1 - slippage)
-            qty_requested = -order
-            
-            if allow_short:
-                qty = qty_requested # allow selling beyond current long (shorting)
-                
-            else:
-                qty = min(qty_requested, max(0, shares)) # safequard against selling more shares than owed 
-            
-            notional = qty * sell_px
-            fees_paid = (fee_rate * notional)
-            if fee_min > 0.0 and qty > 0:
-                fees_paid = max(fee_min, fees_paid)
-            proceeds = notional - fees_paid
-            cash += proceeds
-            shares -= qty
-            exec_px = sell_px if qty > 0 else np.nan
-            order = -qty # actual filled (negative)
-            stop_loss = np.nan
-    
-            
-        # Record bactest results
-        equity = cash + shares * price
-        pnl = equity - prev_equity
-        prev_equity = equity
-        
-        out["price"].append(price)
-        out["signal"].append(signal)
-        out["shares"].append(shares)
-        out["cash"].append(cash)
-        out["equity"].append(equity)
-        out["market_value"].append(shares * price)
-        out["order"].append(order)
-        out["exec_price"].append(exec_px)
-        out["stop_loss"].append(stop_loss)
-        out["fees"].append(fees_paid)
-        out["trade_side"].append(trade_side if order != 0 else "")
-        out["pnl"].append(pnl)
-        
-    result = pd.DataFrame(out, index = data.index)
-    # Performance helpers
+    state = PortfolioState(
+        cash=float(starting_capital),
+        shares=0,
+        stop_loss=np.nan,
+        prev_equity=float(starting_capital),
+    )
+
+    records = []
+    for date, row in data.iterrows():
+        sig_row = signals.loc[date].to_dict() if date in signals.index else {}
+        state, rec = strategy_step(
+            row, state, sig_row,
+            position_sizer_func, position_sizer_param,
+            allow_short, slippage, fee_rate, fee_min, lot_size
+        )
+        records.append(rec.__dict__)
+
+    result = pd.DataFrame(records, index=data.index)
+
+    # Performance helpers (unchanged)
     result["cum_max_equity"] = result["equity"].cummax()
-    result["drawdown"] = (result["equity"] - result["cum_max_equity"]) / result["cum_max_equity"].replace(0, np.nan)  
+    result["drawdown"] = (result["equity"] - result["cum_max_equity"]) / result["cum_max_equity"].replace(0, np.nan)
     result["returns"] = result["equity"].pct_change().fillna(0.0)
     return result
+
 
 def compute_sharpe_ratio(returns: pd.Series, timeframe: str = "OneDay", annual_rf: float = 0.02) -> float:
     """

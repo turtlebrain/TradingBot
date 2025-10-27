@@ -18,7 +18,7 @@ def fixed_fraction_position_sizer(state, fixed_fraction : float) ->int:
     shares = state['shares']
     equity = state['equity']
     allow_short = state['allow_short']
-    slippage = state['slippage ']
+    slippage = state['slippage']
     fee_rate = state['fee_rate']
     fee_min = state['fee_min']
     lot_size = state['lot_size']
