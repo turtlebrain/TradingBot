@@ -382,9 +382,9 @@ class TradingStrategyFrame(ttk.Frame):
         self.scrollbar.grid(row=1, column=2, sticky='ns')
         self.positions_table['yscrollcommand'] = self.scrollbar.set
 
-        # Run backtest button    
-        self.backtest_button = ttk.Button(right_frame, width=50, text="Run Backtest", command=self.run_backtest)
-        self.backtest_button.grid(row=2, column=0, columnspan=2, padx=2, pady=2)
+        # Run strategy button    
+        self.run_strategy_button = ttk.Button(right_frame, width=50, text="Run Strategy", command=self.run_strategy)
+        self.run_strategy_button.grid(row=2, column=0, columnspan=2, padx=2, pady=2)
                   
     def search(self, show_output=True):  
         stock_symbol = self.general_tab.stock_input.get().strip() 
@@ -432,20 +432,8 @@ class TradingStrategyFrame(ttk.Frame):
             return False
 
     
-    def run_backtest(self):
-        # Start a new session
-        acc_id = int(self.active_account.name)
-        session_id = persist.start_trade_session(acc_id, "backtest")
-        
-        # Get Backtest parameters
-        candle_data = {}
-        if not self.chart_frame.live_switch_var.get():
-            candle_data = self.search(show_output=False)
-        else:
-            candle_data = self.controller.frames[AuthFrame].streamer.candle_aggregator.get_candles()
-        if isinstance(candle_data, list):
-            candle_data = pd.DataFrame(candle_data)  
-        
+    def run_strategy(self):
+        # Get compute parameters
         initial_capital = self.execution_tab.starting_capital_input.get().strip()
         if not self.is_input_valid_float(initial_capital, "Starting Capital"):
             return
@@ -468,37 +456,61 @@ class TradingStrategyFrame(ttk.Frame):
         if not self.is_input_valid_float(fixed_fraction, "Fixed Fraction"):        
             return
         try:
-            backtest_results = engine.backtest_strategy(
-                data = candle_data, 
-                buy_logic = self.strategy_tab.buy_section, 
-                sell_logic = self.strategy_tab.sell_section,
-                position_sizer_func = pos_sz.fixed_fraction_position_sizer,
-                position_sizer_param = float(fixed_fraction),
-                stop_loss_func = sl_func,
-                starting_capital = float(initial_capital),
-                allow_short = False,
-                slippage = float(slippage),
-                fee_rate = float(fee_rate),
-                fee_min = float(fee_min),
-                lot_size = int(lot_size)
-            )
-            if not backtest_results.empty:
-                backtest_frame = self.controller.frames[BackTestingResultsFrame]
-                backtest_frame.backtest_results = backtest_results
-                backtest_frame.populate_backtest_display(backtest_results)
-                backtest_frame.results_chart.results = backtest_results
-                result_settings_tab = backtest_frame.result_settings_tab    
-                result_settings_tab.populate_result_text(result_settings_tab.get_result_summary(backtest_results))    
-                backtest_frame.results_chart.update_chart() 
-                # Persist results as a trade stream and add to trade history
-                persist.insert_trade_stream(session_id, backtest_results)
+            candle_data = {}
+            acc_id = int(self.active_account.name)       
+                
+            if self.chart_frame.live_switch_var.get():
+                session_id = persist.start_trade_session(acc_id, "live")
+                candle_data = self.controller.frames[AuthFrame].streamer.candle_aggregator.get_candles()   
+                live_results = engine.run_live_strategy(
+                    candle_source = candle_data,
+                    buy_logic = self.strategy_tab.buy_section,
+                    sell_logic = self.strategy_tab.sell_section,
+                    position_sizer_func = pos_sz.fixed_fraction_position_sizer,
+                    position_sizer_param = float(fixed_fraction),
+                    stop_loss_func = sl_func,
+                    starting_capital = float(initial_capital),
+                    allow_short = False,
+                    slippage = float(slippage),
+                    fee_rate = float(fee_rate),
+                    fee_min = float(fee_min),
+                    lot_size = int(lot_size),
+                    session_id = session_id
+                )
+                
+            else:
+                session_id = persist.start_trade_session(acc_id, "backtest") 
+                candle_data = pd.DataFrame(self.search(show_output=False))
+                backtest_results = engine.backtest_strategy(
+                    data = candle_data, 
+                    buy_logic = self.strategy_tab.buy_section, 
+                    sell_logic = self.strategy_tab.sell_section,
+                    position_sizer_func = pos_sz.fixed_fraction_position_sizer,
+                    position_sizer_param = float(fixed_fraction),
+                    stop_loss_func = sl_func,
+                    starting_capital = float(initial_capital),
+                    allow_short = False,
+                    slippage = float(slippage),
+                    fee_rate = float(fee_rate),
+                    fee_min = float(fee_min),
+                    lot_size = int(lot_size),
+                    session_id = session_id
+                )
+                if not backtest_results.empty:
+                    backtest_frame = self.controller.frames[BackTestingResultsFrame]
+                    backtest_frame.backtest_results = backtest_results
+                    backtest_frame.populate_backtest_display(backtest_results)
+                    backtest_frame.results_chart.results = backtest_results
+                    result_settings_tab = backtest_frame.result_settings_tab    
+                    result_settings_tab.populate_result_text(result_settings_tab.get_result_summary(backtest_results))    
+                    backtest_frame.results_chart.update_chart() 
                 
             self.controller.show_main_frame(BackTestingResultsFrame, "performance")
         except ValueError as err:
             messagebox.showerror("Error", err)
         finally:
             persist.end_trade_session(session_id=session_id) 
-            backtest_frame.render_trade_history()   
+            self.controller.frames[BackTestingResultsFrame].render_trade_history()   
         return session_id
    
 class CandlestickChartFrame(ttk.Frame):
