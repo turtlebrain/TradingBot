@@ -205,36 +205,34 @@ def run_live_strategy(
     fee_rate=0.001,
     fee_min=1.0,
     lot_size=1,
-    session_id=None
+    session_id=None,
+    ui_callback=None
     ):
     """
     Run a trading strategy in live paper mode using streaming candles only.
     Processes each new candle as it arrives, applies strategy logic, and
     persists TradeRecords incrementally.
     """
-
-    # --- initialize portfolio state ---
+    
     state = PortfolioState(
         cash=float(starting_capital),
         shares=0,
         stop_loss=float("nan"),
         prev_equity=float(starting_capital),
     )
-
-    # --- Callback for each new candle ---
     records: list[TradeRecord] = []
+
     def on_new_candle(candle_row: pd.Series):
-        # 1. Compute signals for this candle only
-        signals_df = ste.evaluate_strategy(buy_logic, sell_logic,
-                                           pd.DataFrame([candle_row]))
+        nonlocal state, records
+        # compute signals
+        signals_df = ste.evaluate_strategy(buy_logic, sell_logic, pd.DataFrame([candle_row]))
         if stop_loss_func:
             signals_df = stop_loss_func(signals_df)
         latest_signals = signals_df.iloc[-1].to_dict()
 
-        # 2. Step the strategy with current state and signals
-        nonlocal state
+        # step strategy
         state, rec = strategy_step(
-            row=candle_row,
+            data_row=candle_row,
             state=state,
             signals_row=latest_signals,
             position_sizer_func=position_sizer_func,
@@ -245,21 +243,26 @@ def run_live_strategy(
             fee_min=fee_min,
             lot_size=lot_size,
         )
-        
-        # Append to in‑memory list
+
         records.append(rec)
 
-        # Convert to DataFrame
-        df = pd.DataFrame([r.__dict__ for r in records], index=[r.date for r in records])
+        # UI update only
+        if ui_callback:
+            df = pd.DataFrame([rec.__dict__], index=[candle_row.name])
+            ui_callback(df)
 
-        # Persist the whole DataFrame
+    # subscribe to stream
+    candle_source.subscribe(on_new_candle)
+
+    # return all records when session ends (caller decides when to stop)
+    def finalize():
+        df = pd.DataFrame([r.__dict__ for r in records])
         if session_id:
             persist.insert_trade_stream(session_id, df)
+        return df
 
-        return rec
+    return finalize
 
-    # --- subscribe to the candle stream ---
-    candle_source.subscribe(on_new_candle)
 
 
 def compute_sharpe_ratio(returns: pd.Series, timeframe: str = "OneDay", annual_rf: float = 0.02) -> float:

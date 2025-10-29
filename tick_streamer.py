@@ -75,7 +75,7 @@ class QuestradeStreamer:
         if self.connected:
             print("WebSocket is already connected.")
             return
-        if self.symbol_id is not symbol_id:
+        if self.symbol_id != symbol_id:
             self.candle_aggregator = tick_processor.CandleAggregator(time_interval='OneMinute') # 1-minute candles
         stream_url = self.get_stream_url(symbol_id)
         self.ws = websocket.WebSocketApp(
