@@ -21,6 +21,8 @@ import threading
 import tick_streamer as qt_stream
 import strategy_tree_builder as stb
 import persistence as persist
+import tick_processor
+import queue
 
 
 class TradingBotApp:
@@ -125,6 +127,7 @@ class TradingBotApp:
         
     def on_close(self):
         self.running = False
+        # Gracefully end trade live trading and finalize dataframe, and finally stop stream and persist sessions
         qt_api.log.end_session()
         self.root.quit()
         self.root.destroy()
@@ -161,7 +164,6 @@ class AuthFrame(ttk.Frame):
         self.access_token = None
         self.api_server = None
         self.expiry_time = None
-        self.streamer = None
         self.thread = None
         self.lock = threading.Lock()
         
@@ -175,10 +177,6 @@ class AuthFrame(ttk.Frame):
         self.api_server = token_data.get('api_server', '')   
         self.access_token = token_data.get('access_token', '')
         self.refresh_token = token_data.get('refresh_token', '')
-        self.streamer = qt_stream.QuestradeStreamer(
-            access_token = self.access_token,
-            api_server = self.api_server
-        )
         self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=token_data.get('expires_in', 0))
         if self.api_server and self.access_token:
             # Start background thread for auto-refresh
@@ -200,22 +198,22 @@ class AuthFrame(ttk.Frame):
                 refresh_token_data = qt_api.refresh_access_token(self.refresh_token)
                 self.api_server = refresh_token_data.get('api_server', '')   
                 self.access_token = refresh_token_data.get('access_token', '')
-                self.refresh_token = refresh_token_data.get('refresh_token', '')    
-                self.streamer.access_token = self.access_token
-                self.streamer.api_server = self.api_server
-                if self.controller.frames[TradingStrategyFrame].chart_frame.live_switch_var.get():
-                    symbol_data = qt_api.get_stock_data(
-                        access_token=self.access_token,
-                        api_server=self.api_server, 
-                        symbol_str=self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
-                    )
-                    symbol_id = symbol_data[0]['symbolId']
-                    self.streamer.start_stream(symbol_id)
-                self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=refresh_token_data.get('expires_in', 0))
+                self.refresh_token = refresh_token_data.get('refresh_token', '')  
+                streamer = self.controller.frames[TradingStrategyFrame].chart_frame.streamer 
+                if streamer:
+                    streamer.access_token = self.access_token
+                    streamer.api_server = self.api_server
+                    if streamer.connected:
+                        streamer.reconnect()
+
+                self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+                    seconds=refresh_token_data.get("expires_in", 0)
+                )
                 print("Access token refreshed successfully")
             except Exception as e:
                 print("Failed to refresh token:", e)
-                time.sleep(30)  # Wait a short delay before retrying
+                time.sleep(30)
+
 
 class AccountManagerFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -456,7 +454,7 @@ class TradingStrategyFrame(ttk.Frame):
                     backtest_frame.render_trade_history()
 
                 self._finalize_live = engine.run_live_strategy(
-                    candle_source=self.controller.frames[AuthFrame].streamer.candle_aggregator,
+                    candle_source=self.chart_frame.candle_aggregator,
                     buy_logic=self.strategy_tab.buy_section,
                     sell_logic=self.strategy_tab.sell_section,
                     position_sizer_func=pos_sz.fixed_fraction_position_sizer,
@@ -549,24 +547,53 @@ class CandlestickChartFrame(ttk.Frame):
         self.timeframe_control = self.create_segmented_control(self.timeframe_options, self.on_timeframe_change)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
+        
+        self.tick_queue = None
+        self.streamer = None
+        self.candle_aggregator = None
+        self._poll_job = None
     
     def toggle_live_mode(self):
         if self.live_switch_var.get(): 
+            self.tick_queue = queue.Queue()
+            auth_frame = self.controller.frames[AuthFrame]
+            self.streamer = qt_stream.QuestradeStreamer(
+                access_token = auth_frame.access_token,
+                api_server = auth_frame.api_server,
+                tick_queue = self.tick_queue
+            )
+            self.candle_aggregator = tick_processor.CandleAggregator("OneMinute")
+                    
             symbol_data = qt_api.get_stock_data(
-                access_token=self.controller.frames[AuthFrame].access_token,
-                api_server=self.controller.frames[AuthFrame].api_server, 
+                access_token=auth_frame.access_token,
+                api_server=auth_frame.api_server, 
                 symbol_str=self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
             )
+            symbol_id = symbol_data[0]['symbolId']
             for rb in self.timeframe_control:
                 rb.config(state=tk.DISABLED)
-            
-            symbol_id = symbol_data[0]['symbolId']
-            self.controller.frames[AuthFrame].streamer.start_stream(symbol_id)
+            self.streamer.start_stream(symbol_id)
+            self._poll_ticks()
             self.periodically_update_chart()
         else:
-            self.controller.frames[AuthFrame].streamer.stop_stream()
+            if self.streamer:
+                self.streamer.stop_stream()
+            if self._poll_job:
+                root.after_cancel(self._poll_job)
+                self._poll_job = None
+            self.tick_queue = None
             for rb in self.timeframe_control:
                 rb.config(state=tk.NORMAL)
+    
+    def _poll_ticks(self):
+        try:
+            while True:
+                tick = self.tick_queue.get_nowait()
+                self.candle_aggregator.update(tick)
+        except queue.Empty:
+            pass
+        if self.live_switch_var.get():
+            self._poll_job = root.after(100, self._poll_ticks)
         
     def toggle_show_label(self):
         if self.show_label_var.get(): 
@@ -590,7 +617,7 @@ class CandlestickChartFrame(ttk.Frame):
                                self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip())
         
     def periodically_update_chart(self):
-        candles_df = self.controller.frames[AuthFrame].streamer.candle_aggregator.get_candles()
+        candles_df = self.candle_aggregator.get_candles()
         if not candles_df.empty and self.live_switch_var.get():
             self.update_chart(candles_df)
         root.after(30000, self.periodically_update_chart)  # Update every 30 seconds     
@@ -1075,7 +1102,7 @@ class ResultSettingsCollapsibleFrame(CollapsibleFrame):
             chart_frame = self.controller.frames[TradingStrategyFrame].chart_frame
             time_frame = chart_frame.time_interval
             if chart_frame.live_switch_var.get():
-                time_frame = self.controller.frames[AuthFrame].streamer.candle_aggregator.time_interval
+                time_frame = chart_frame.candle_aggregator.time_interval
             result_summary['sharpe_ratio'] = round(engine.compute_sharpe_ratio(returns = results['returns'], 
                                                                                timeframe = time_frame), 2)
         return result_summary

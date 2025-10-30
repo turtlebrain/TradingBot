@@ -17,16 +17,24 @@ class CandleAggregator:
         interval_seconds = interval_map[time_interval]
         self.interval = interval_seconds
         self.candles = defaultdict(dict)  # {timestamp: {open, high, low, close, volume}}
-        self.subscribers = []   # list of callbacks
+        self._subscribers = []   # list of callbacks
     
     def subscribe(self, callback):
         """Register a function to be called when a candle closes"""
-        self.subscribers.append(callback)
-    
+        if callback not in self._subscribers:
+            self._subscribers.append(callback)
+
+    def unsubscribe(self, callback):
+        if callback in self._subscribers:
+            self._subscribers.remove(callback)
+
+    def clear_subscribers(self):
+        self._subscribers.clear()
+
     def _notify_subscribers(self, ts, candle_dict):
         """Internal: notify all subscribers with the new candle row"""
         candle_row = pd.Series(candle_dict, name=ts)
-        for cb in self.subscribers:
+        for cb in self._subscribers:
             cb(candle_row)
 
     def _floor_time(self, dt: datetime.datetime) -> datetime.datetime:

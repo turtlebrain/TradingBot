@@ -3,38 +3,40 @@ import json
 import threading
 import requests
 from urllib.parse import urlparse
-import tick_processor
 import datetime
+import queue
 
 class QuestradeStreamer:
-    def __init__(self, access_token, api_server):
+    def __init__(self, access_token: str, api_server: str, tick_queue: queue.Queue):
         self.access_token = access_token
         self.api_server = api_server
-        self.symbol_id = ''
+        self.symbol_id = None
         self.ws = None
         self.thread = None
         self.connected = False
-        self.candle_aggregator = None 
+        self.tick_queue = tick_queue    # shared queue
         
     def _on_open(self, ws):
         print("WebSocket connection opened.")
-        # Send access token
         ws.send(self.access_token)
         self.connected = True
         
         
     def _on_message(self, ws, message):
-        data = json.loads(message)
-        if "quotes" in data:
-            for q in data["quotes"]:
-                ts = datetime.datetime.fromisoformat(q["lastTradeTime"].replace("Z", "+00:00"))
-                ts = ts.astimezone(datetime.timezone.utc)  # normalize to UTC
-                tick = {
-                    "price": q["lastTradePrice"],
-                    "volume": q.get("lastTradeSize", 0),
-                    "timestamp": ts
-                }
-                self.candle_aggregator.update(tick)
+        try:
+            data = json.loads(message)
+            if "quotes" in data:
+                for q in data["quotes"]:
+                    ts = datetime.datetime.fromisoformat(q["lastTradeTime"].replace("Z", "+00:00"))
+                    ts = ts.astimezone(datetime.timezone.utc)  # normalize to UTC
+                    tick = {
+                        "price": q["lastTradePrice"],
+                        "volume": q.get("lastTradeSize", 0),
+                        "timestamp": ts
+                    }
+                    self.tick_queue.put(tick)
+        except Exception as e:
+            print("Error processing message:", e)
 
     def _on_error(self, ws, error):
         print("WebSocket error:", error)
@@ -72,11 +74,10 @@ class QuestradeStreamer:
 
     
     def start_stream(self, symbol_id):
-        if self.connected:
+        if self.connected and self.symbol_id == symbol_id:
             print("WebSocket is already connected.")
             return
-        if self.symbol_id != symbol_id:
-            self.candle_aggregator = tick_processor.CandleAggregator(time_interval='OneMinute') # 1-minute candles
+            
         stream_url = self.get_stream_url(symbol_id)
         self.ws = websocket.WebSocketApp(
             stream_url,
@@ -87,6 +88,13 @@ class QuestradeStreamer:
         )
         self.thread = threading.Thread(target=self.ws.run_forever, daemon=True)
         self.thread.start()
+    
+    def reconnect(self):
+        """Reconnect using current symbol_id and new token"""
+        if not self.symbol_id:
+            return
+        self.stop_stream()
+        self.start_stream(self.symbol_id)
     
     def stop_stream(self):
         if self.ws:
