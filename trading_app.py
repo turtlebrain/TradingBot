@@ -203,13 +203,13 @@ class AuthFrame(ttk.Frame):
                 if streamer:
                     streamer.access_token = self.access_token
                     streamer.api_server = self.api_server
-                    if streamer.connected:
-                        streamer.reconnect()
+                    streamer.reconnect()
+                    print("Access token refreshed successfully")
 
                 self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
                     seconds=refresh_token_data.get("expires_in", 0)
                 )
-                print("Access token refreshed successfully")
+                
             except Exception as e:
                 print("Failed to refresh token:", e)
                 time.sleep(30)
@@ -504,7 +504,7 @@ class TradingStrategyFrame(ttk.Frame):
                 allow_short=False,
                 slippage=float(self.execution_tab.slippage_input.get().strip()),
                 fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
-                ee_min=float(self.execution_tab.minimum_fee_input.get().strip()),
+                fee_min=float(self.execution_tab.minimum_fee_input.get().strip()),
                 lot_size=int(self.execution_tab.lot_size_input.get().strip()),
                 session_id=session_id,
             )

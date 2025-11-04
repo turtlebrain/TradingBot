@@ -71,7 +71,7 @@ class QuestradeStreamer:
         stream_server = parsed.netloc
         stream_url = f"wss://{stream_server}:{port}"
         return stream_url
-
+ 
     
     def start_stream(self, symbol_id):
         if self.connected and self.symbol_id == symbol_id:
@@ -98,7 +98,14 @@ class QuestradeStreamer:
     
     def stop_stream(self):
         if self.ws:
-            self.ws.close()
+            try:
+                self.ws.close()
+            except Exception as e:
+                print("Error closing websocket:", e)
             self.ws = None
+        if self.thread and self.thread.is_alive():
+            self.thread.join(timeout=2)
+        self.thread = None
+        self.connected = False   
         print("WebSocket stream stopped.")
         

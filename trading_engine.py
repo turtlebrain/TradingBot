@@ -206,7 +206,8 @@ def run_live_strategy(
     fee_min=1.0,
     lot_size=1,
     session_id=None,
-    ui_callback=None
+    ui_callback=None,
+    history_window = 500    # Number of last candles kept
     ):
     """
     Run a trading strategy in live paper mode using streaming candles only.
@@ -221,11 +222,17 @@ def run_live_strategy(
         prev_equity=float(starting_capital),
     )
     records: list[TradeRecord] = []
+    live_candles = pd.DataFrame()   # rolling history
 
     def on_new_candle(candle_row: pd.Series):
-        nonlocal state, records
+        nonlocal state, records, live_candles
+        
+        # append new candle to rolling history
+        live_candles = pd.concat([live_candles, candle_row.to_frame().T]) 
+        live_candles = live_candles.tail(history_window)
+        
         # compute signals
-        signals_df = ste.evaluate_strategy(buy_logic, sell_logic, pd.DataFrame([candle_row]))
+        signals_df = ste.evaluate_strategy(buy_logic, sell_logic, live_candles)
         if stop_loss_func:
             signals_df = stop_loss_func(signals_df)
         latest_signals = signals_df.iloc[-1].to_dict()
