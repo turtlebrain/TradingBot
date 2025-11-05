@@ -8,8 +8,8 @@ class CandleAggregator:
         # Map time intervals to seconds
         interval_map = {
         "OneMinute": 60,
-        "OneHour": int(252 * 6.5), 
-        "OneDay": 252,  
+        "OneHour": 3600, 
+        "OneDay": 86400,  
         }
         if time_interval not in interval_map:
             raise ValueError(f"Invalid time interval: {time_interval}. Must be one of {list(interval_map.keys())}")
