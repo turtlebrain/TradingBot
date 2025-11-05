@@ -168,12 +168,12 @@ def update_position(account_id, symbol, quantity, avg_price, current_price=None,
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO positions (account_id, symbol. quantity, avg_price, current_price, pl)
+            INSERT INTO positions (account_id, symbol, quantity, avg_price, current_price, pl)
             VALUES (?, ?, ?, ?, ?, ?)
-            ON_CONFLICT(account_id, symbol) DO UPDATE SET
+            ON CONFLICT(account_id, symbol) DO UPDATE SET
                 quantity = excluded.quantity,
                 avg_price = excluded.avg_price,
-                current_price, excluded.current_price,
+                current_price = excluded.current_price,
                 pl = excluded.pl
         """, (account_id, symbol, quantity, avg_price, current_price, pl))
         conn.commit()
