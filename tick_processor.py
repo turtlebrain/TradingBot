@@ -3,7 +3,8 @@ import pandas as pd
 from collections import defaultdict
 
 class CandleAggregator:
-    def __init__(self, time_interval: str = "OneMinute"):
+    def __init__(self, symbol: str, time_interval: str = "OneMinute"):
+        self.symbol = symbol
         self.time_interval = time_interval
         # Map time intervals to seconds
         interval_map = {

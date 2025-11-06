@@ -267,6 +267,7 @@ class AccountManagerFrame(ttk.Frame):
         # --- end of stuff ---
         self.controller.frames[TradingStrategyFrame].active_account = meta     
         self.controller.frames[TradingStrategyFrame].chart_frame.candle_chart.clear()
+        self.controller.frames[TradingStrategyFrame].render_positions_table()
         self.controller.frames[BackTestingResultsFrame].results_chart.chart.clear()
         self.controller.frames[BackTestingResultsFrame].clear_backtest_display()
         self.controller.frames[BackTestingResultsFrame].render_trade_history()
@@ -383,7 +384,41 @@ class TradingStrategyFrame(ttk.Frame):
         # Run strategy button    
         self.run_strategy_button = ttk.Button(right_frame, width=50, text="Run Strategy", command=self.run_strategy)
         self.run_strategy_button.grid(row=2, column=0, columnspan=2, padx=2, pady=2)
-                  
+    
+    def render_positions_table(self):
+        """
+        Render the positions DataFrame into the given ttk.Treeview.
+        Expects df to have columns: Symbol, Quantity, Avg Price, Current Price, P/L
+        """
+        # Clear existing rows
+        for row in self.positions_table.get_children():
+            self.positions_table.delete(row)
+
+        # Only render if an account is active
+        active_acc = self.active_account
+        if active_acc is None:
+            return
+
+        acc_id = int(active_acc.name)  # account_id is the Series.name
+        positions = persist.load_positions(acc_id)
+        if positions.empty:
+            return
+
+        # Insert updated rows
+        for _, row in positions.iterrows():
+            self.positions_table.insert(
+                "",
+                "end",
+                values=(
+                    row["symbol"],
+                    int(row["quantity"]),
+                    f"{row['avg_price']:.2f}",
+                    f"{row['current_price']:.2f}",
+                    f"{row['pl']:.2f}"
+                )
+            )
+
+                     
     def search(self, show_output=True):  
         stock_symbol = self.general_tab.stock_input.get().strip() 
         start_date = self.general_tab.start_date_input.get_date().isoformat()
@@ -452,6 +487,7 @@ class TradingStrategyFrame(ttk.Frame):
                     backtest_frame.results_chart.results = backtest_frame.backtest_results
                     backtest_frame.results_chart.update_chart()
                     backtest_frame.render_trade_history()
+                    self.render_positions_table()
 
                 self._finalize_live = engine.run_live_strategy(
                     candle_source=self.chart_frame.candle_aggregator,
@@ -466,6 +502,7 @@ class TradingStrategyFrame(ttk.Frame):
                     fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
                     fee_min=float(self.execution_tab.minimum_fee_input.get().strip()),
                     lot_size=int(self.execution_tab.lot_size_input.get().strip()),
+                    account_id = acc_id,
                     session_id=session_id,
                     ui_callback=_on_live_update,
                 )
@@ -562,12 +599,12 @@ class CandlestickChartFrame(ttk.Frame):
                 api_server = auth_frame.api_server,
                 tick_queue = self.tick_queue
             )
-            self.candle_aggregator = tick_processor.CandleAggregator("OneMinute")
-                    
+            stock_symbol = self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
+            self.candle_aggregator = tick_processor.CandleAggregator(stock_symbol, "OneMinute")             
             symbol_data = qt_api.get_stock_data(
                 access_token=auth_frame.access_token,
                 api_server=auth_frame.api_server, 
-                symbol_str=self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
+                symbol_str=stock_symbol
             )
             symbol_id = symbol_data[0]['symbolId']
             for rb in self.timeframe_control:

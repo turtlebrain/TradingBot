@@ -4,6 +4,7 @@ import math
 import strategy_tree_evaluator as ste
 from Data.portfolio_state import PortfolioState
 from Data.trade_record import TradeRecord
+from Data.position_record import PositionRecord
 import persistence as persist
 
 
@@ -205,14 +206,15 @@ def run_live_strategy(
     fee_rate=0.001,
     fee_min=1.0,
     lot_size=1,
+    account_id=None,
     session_id=None,
     ui_callback=None,
-    history_window = 500    # Number of last candles kept
+    history_window=500    # Number of last candles kept
     ):
     """
     Run a trading strategy in live paper mode using streaming candles only.
     Processes each new candle as it arrives, applies strategy logic, and
-    persists TradeRecords incrementally.
+    persists TradeRecords and PositionRecord incrementally.
     """
     
     state = PortfolioState(
@@ -221,16 +223,17 @@ def run_live_strategy(
         stop_loss=float("nan"),
         prev_equity=float(starting_capital),
     )
-    records: list[TradeRecord] = []
+    trade_records: list[TradeRecord] = []
+    position_records: list[PositionRecord] = []
     live_candles = pd.DataFrame()   # rolling history
 
-    def on_new_candle(candle_row: pd.Series):
-        nonlocal state, records, live_candles
-        
+    def on_new_candle(candle_row: pd.Series, symbol: str = None):
+        nonlocal state, trade_records, position_records, live_candles
+
         # append new candle to rolling history
         live_candles = pd.concat([live_candles, candle_row.to_frame().T]) 
         live_candles = live_candles.tail(history_window)
-        
+
         # compute signals
         signals_df = ste.evaluate_strategy(buy_logic, sell_logic, live_candles)
         if stop_loss_func:
@@ -241,7 +244,7 @@ def run_live_strategy(
         state, rec = strategy_step(
             data_row=candle_row,
             state=state,
-            signals_row=latest_signals,
+            signals_row=latest_signals,  
             position_sizer_func=position_sizer_func,
             position_sizer_param=position_sizer_param,
             allow_short=allow_short,
@@ -251,22 +254,48 @@ def run_live_strategy(
             lot_size=lot_size,
         )
 
-        records.append(rec)
+        trade_records.append(rec)
 
-        # UI update only
+        # --- Build PositionRecord snapshot using candle_source symbol ---
+        pos = update_position_record(position_records, rec, state, candle_row, symbol)
+        position_records.append(pos)
+
+        if session_id:
+            persist.update_position(
+                account_id=account_id,
+                symbol=pos.symbol,
+                quantity=pos.shares,
+                avg_price=pos.avg_price,
+                current_price=pos.market_price,
+                pl=pos.realized_pnl + pos.unrealized_pnl
+            )
+
         if ui_callback:
             df = pd.DataFrame([rec.__dict__], index=[candle_row.name])
             ui_callback(df)
 
-    # subscribe to stream
-    candle_source.subscribe(on_new_candle)
+    # subscribe to stream, passing symbol along
+    candle_source.subscribe(lambda row: on_new_candle(row, candle_source.symbol))
+
 
     # return all records when session ends (caller decides when to stop)
     def finalize():
-        df = pd.DataFrame([r.__dict__ for r in records])
+        trades_df = pd.DataFrame([r.__dict__ for r in trade_records])
+
         if session_id:
-            persist.insert_trade_stream(session_id, df)
-        return df
+            persist.insert_trade_stream(session_id, trades_df)
+            if position_records:  # only if we have positions
+                pos = position_records[-1]
+                persist.update_position(
+                    account_id=account_id,
+                    symbol=pos.symbol,
+                    quantity=pos.shares,
+                    avg_price=pos.avg_price,
+                    current_price=pos.market_price,
+                    pl=pos.realized_pnl + pos.unrealized_pnl
+                )
+
+        return trades_df
 
     return finalize
 
@@ -311,3 +340,85 @@ def compute_sharpe_ratio(returns: pd.Series, timeframe: str = "OneDay", annual_r
     sharpe = (mean_excess / sigma_p) * np.sqrt(periods_per_year)
     return sharpe
 
+def calculate_avg_price(old_shares, old_avg_price, trade_shares, trade_price):
+    """
+    Calculate new average price after a trade.
+    - old_shares: current position size (can be 0, positive for long, negative for short)
+    - old_avg_price: current average price
+    - trade_shares: signed quantity of the trade (+buy, -sell)
+    - trade_price: execution price of the trade
+    """
+    # No existing position → avg price is just the trade price
+    if old_shares == 0:
+        return trade_price
+
+    # Same direction (adding to position)
+    if (old_shares > 0 and trade_shares > 0) or (old_shares < 0 and trade_shares < 0):
+        new_shares = old_shares + trade_shares
+        return ((old_avg_price * old_shares) + (trade_price * trade_shares)) / new_shares
+
+    # Reducing position (partial close) → avg price unchanged
+    if abs(trade_shares) < abs(old_shares):
+        return old_avg_price
+
+    # Flipping position (close + open opposite) → reset avg price
+    return trade_price
+
+def calculate_position_pnl(prev_pos, trade_shares, trade_price, current_price, avg_price, total_shares):
+    """
+    Calculate realized and unrealized P/L for a position.
+    
+    prev_pos: previous PositionRecord or None
+    trade_shares: signed trade size (positive buy, negative sell)
+    trade_price: execution price of the trade
+    current_price: latest market price
+    avg_price: updated average price of the position
+    total_shares: current open shares after the trade
+    """
+    realized_pnl = prev_pos.realized_pnl if prev_pos else 0.0
+
+    # If reducing or flipping, compute realized P/L on closed portion
+    if prev_pos and (trade_shares * prev_pos.shares) < 0:
+        closed_qty = min(abs(trade_shares), abs(prev_pos.shares))
+        direction = 1 if prev_pos.shares > 0 else -1
+        realized_pnl += closed_qty * (trade_price - prev_pos.avg_price) * direction
+
+    # Unrealized P/L on remaining shares
+    unrealized_pnl = (current_price - avg_price) * total_shares
+
+    return realized_pnl, unrealized_pnl
+
+def update_position_record(position_records, rec: TradeRecord, state: PortfolioState, candle_row, symbol: str):
+    prev_pos = next((p for p in reversed(position_records) if p.symbol == symbol), None)
+
+    # calculate new average price
+    new_avg_price = calculate_avg_price(
+        old_shares=prev_pos.shares if prev_pos else 0,
+        old_avg_price=prev_pos.avg_price if prev_pos else 0.0,
+        trade_shares=rec.order,
+        trade_price=rec.exec_price
+    )
+
+    # calculate realized/unrealized P&L
+    realized_pnl, unrealized_pnl = calculate_position_pnl(
+        prev_pos=prev_pos,
+        trade_shares=rec.order,
+        trade_price=rec.exec_price,
+        current_price=candle_row["close"],
+        avg_price=new_avg_price,
+        total_shares=state.shares
+    )
+
+    pos = PositionRecord(
+        symbol=symbol,
+        shares=state.shares,
+        avg_price=new_avg_price,
+        market_price=candle_row["close"],
+        market_value=state.shares * candle_row["close"],
+        realized_pnl=realized_pnl,
+        unrealized_pnl=unrealized_pnl,
+        side="long" if state.shares > 0 else "short" if state.shares < 0 else "",
+        date=candle_row.name
+    )
+
+    return pos
