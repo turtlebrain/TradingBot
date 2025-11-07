@@ -396,7 +396,7 @@ def update_position_record(position_records, rec: TradeRecord, state: PortfolioS
         old_shares=prev_pos.shares if prev_pos else 0,
         old_avg_price=prev_pos.avg_price if prev_pos else 0.0,
         trade_shares=rec.order,
-        trade_price=rec.exec_price
+        trade_price=rec.exec_price if rec.exec_price is not None and not math.isnan(rec.exec_price) else 0.0
     )
 
     # calculate realized/unrealized P&L

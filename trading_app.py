@@ -261,11 +261,7 @@ class AccountManagerFrame(ttk.Frame):
                 widget.bind("<Button-1>", lambda e, n = account_id: self.open_account(n))
             
     def on_open_trading_view(self, meta):
-        # --- This stuff here is temporary and needs to be refactored
-        self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.delete(0, tk.END)
-        self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.insert(0, str(meta["capital"]))
-        # --- end of stuff ---
-        self.controller.frames[TradingStrategyFrame].active_account = meta     
+        self.controller.frames[TradingStrategyFrame].set_active_account(meta)     
         self.controller.frames[TradingStrategyFrame].chart_frame.candle_chart.clear()
         self.controller.frames[TradingStrategyFrame].render_positions_table()
         self.controller.frames[BackTestingResultsFrame].results_chart.chart.clear()
@@ -385,6 +381,15 @@ class TradingStrategyFrame(ttk.Frame):
         self.run_strategy_button = ttk.Button(right_frame, width=50, text="Run Strategy", command=self.run_strategy)
         self.run_strategy_button.grid(row=2, column=0, columnspan=2, padx=2, pady=2)
     
+    def set_active_account(self, account_meta):
+        if not account_meta.empty:
+            self.active_account = account_meta
+            self.execution_tab.cash_var.set(account_meta["cash"])
+            self.execution_tab.cash_entry.state(["disabled"])
+        elif not self.active_account:
+            self.execution_tab.cash_entry.state(["!disabled"])
+        
+    
     def render_positions_table(self):
         """
         Render the positions DataFrame into the given ttk.Treeview.
@@ -496,7 +501,7 @@ class TradingStrategyFrame(ttk.Frame):
                     position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                     position_sizer_param=float(self.execution_tab.position_slider_value.get()),
                     stop_loss_func=risk.StopLoss.average_true_range_stop if self.execution_tab.stop_loss_var.get() else None,
-                    starting_capital=float(self.execution_tab.starting_capital_input.get().strip()),
+                    starting_capital=float(self.execution_tab.cash_var.get()),
                     allow_short=False,
                     slippage=float(self.execution_tab.slippage_input.get().strip()),
                     fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
@@ -537,7 +542,7 @@ class TradingStrategyFrame(ttk.Frame):
                 position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                 position_sizer_param=float(self.execution_tab.position_slider_value.get()),
                 stop_loss_func=risk.StopLoss.average_true_range_stop if self.execution_tab.stop_loss_var.get() else None,
-                starting_capital=float(self.execution_tab.starting_capital_input.get().strip()),
+                starting_capital=float(self.execution_tab.cash_var.get()),
                 allow_short=False,
                 slippage=float(self.execution_tab.slippage_input.get().strip()),
                 fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
@@ -983,11 +988,11 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
         super().__init__(parent, title="Execution")
-        self.starting_capital_label = ttk.Label(self.content, text="Starting Capital:")
-        self.starting_capital_label.pack(anchor="w")
-        self.starting_capital_input = ttk.Entry(self.content)
-        self.starting_capital_input.insert(0, 10000.0)
-        self.starting_capital_input.pack(fill="x", pady=2)
+        self.cash_label = ttk.Label(self.content, text="Cash:")
+        self.cash_label.pack(anchor="w")
+        self.cash_var = tk.DoubleVar(value=10000.0)
+        self.cash_entry = ttk.Entry(self.content, textvariable=self.cash_var)
+        self.cash_entry.pack(fill="x", pady=2)
         self.slippage_label = ttk.Label(self.content, text="Slippage")
         self.slippage_label.pack(anchor="w")
         self.slippage_input = ttk.Entry(self.content)

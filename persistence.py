@@ -19,7 +19,7 @@ def init_db():
             name         TEXT NOT NULL,
             date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_opened  TIMESTAMP,
-            capital      REAL NOT NULL
+            cash      REAL NOT NULL
         )
         """)
 
@@ -80,18 +80,18 @@ def init_db():
         conn.commit()
 
 # --- Account file i/o ---
-def insert_account(name, capital):
+def insert_account(name, cash):
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO accounts (name, capital, last_opened) VALUES (?, ?, CURRENT_TIMESTAMP)",
-            (name, capital)
+            "INSERT INTO accounts (name, cash, last_opened) VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (name, cash)
         )
         conn.commit()
         return cur.lastrowid  # new account_id
 
 def update_account(account_id, **kwargs):
-    """Update arbitrary fields on an account (e.g. last_opened, capital)."""
+    """Update arbitrary fields on an account (e.g. last_opened, cash)."""
     if not kwargs:
         return
     with get_connection() as conn:
@@ -104,8 +104,8 @@ def load_accounts():
     with get_connection() as conn:
         return pd.read_sql("SELECT * FROM accounts", conn, index_col="account_id")
 
-def create_account(name, capital):
-    account_id = insert_account(name, capital)
+def create_account(name, cash):
+    account_id = insert_account(name, cash)
     return load_accounts().loc[account_id]
 
 def open_account(account_id):
