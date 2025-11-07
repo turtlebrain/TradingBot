@@ -12,7 +12,7 @@ import pandas as pd
 import tkinter.font as tkFont
 import position_sizing as pos_sz
 import risk_control as risk
-import backtest_engine as engine
+import trading_engine as engine
 import requests 
 import chartforgetk_wrapper as cftk_wrap
 import time
@@ -21,6 +21,8 @@ import threading
 import tick_streamer as qt_stream
 import strategy_tree_builder as stb
 import persistence as persist
+import tick_processor
+import queue
 
 
 class TradingBotApp:
@@ -125,6 +127,7 @@ class TradingBotApp:
         
     def on_close(self):
         self.running = False
+        # Gracefully end trade live trading and finalize dataframe, and finally stop stream and persist sessions
         qt_api.log.end_session()
         self.root.quit()
         self.root.destroy()
@@ -161,7 +164,6 @@ class AuthFrame(ttk.Frame):
         self.access_token = None
         self.api_server = None
         self.expiry_time = None
-        self.streamer = None
         self.thread = None
         self.lock = threading.Lock()
         
@@ -175,10 +177,6 @@ class AuthFrame(ttk.Frame):
         self.api_server = token_data.get('api_server', '')   
         self.access_token = token_data.get('access_token', '')
         self.refresh_token = token_data.get('refresh_token', '')
-        self.streamer = qt_stream.QuestradeStreamer(
-            access_token = self.access_token,
-            api_server = self.api_server
-        )
         self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=token_data.get('expires_in', 0))
         if self.api_server and self.access_token:
             # Start background thread for auto-refresh
@@ -200,22 +198,22 @@ class AuthFrame(ttk.Frame):
                 refresh_token_data = qt_api.refresh_access_token(self.refresh_token)
                 self.api_server = refresh_token_data.get('api_server', '')   
                 self.access_token = refresh_token_data.get('access_token', '')
-                self.refresh_token = refresh_token_data.get('refresh_token', '')    
-                self.streamer.access_token = self.access_token
-                self.streamer.api_server = self.api_server
-                if self.controller.frames[TradingStrategyFrame].chart_frame.live_switch_var.get():
-                    symbol_data = qt_api.get_stock_data(
-                        access_token=self.access_token,
-                        api_server=self.api_server, 
-                        symbol_str=self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
-                    )
-                    symbol_id = symbol_data[0]['symbolId']
-                    self.streamer.start_stream(symbol_id)
-                self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=refresh_token_data.get('expires_in', 0))
-                print("Access token refreshed successfully")
+                self.refresh_token = refresh_token_data.get('refresh_token', '')  
+                streamer = self.controller.frames[TradingStrategyFrame].chart_frame.streamer 
+                if streamer:
+                    streamer.access_token = self.access_token
+                    streamer.api_server = self.api_server
+                    streamer.reconnect()
+                    print("Access token refreshed successfully")
+
+                self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+                    seconds=refresh_token_data.get("expires_in", 0)
+                )
+                
             except Exception as e:
                 print("Failed to refresh token:", e)
-                time.sleep(30)  # Wait a short delay before retrying
+                time.sleep(30)
+
 
 class AccountManagerFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -263,12 +261,9 @@ class AccountManagerFrame(ttk.Frame):
                 widget.bind("<Button-1>", lambda e, n = account_id: self.open_account(n))
             
     def on_open_trading_view(self, meta):
-        # --- This stuff here is temporary and needs to be refactored
-        self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.delete(0, tk.END)
-        self.controller.frames[TradingStrategyFrame].execution_tab.starting_capital_input.insert(0, str(meta["capital"]))
-        # --- end of stuff ---
-        self.controller.frames[TradingStrategyFrame].active_account = meta     
+        self.controller.frames[TradingStrategyFrame].set_active_account(meta)     
         self.controller.frames[TradingStrategyFrame].chart_frame.candle_chart.clear()
+        self.controller.frames[TradingStrategyFrame].render_positions_table()
         self.controller.frames[BackTestingResultsFrame].results_chart.chart.clear()
         self.controller.frames[BackTestingResultsFrame].clear_backtest_display()
         self.controller.frames[BackTestingResultsFrame].render_trade_history()
@@ -382,10 +377,53 @@ class TradingStrategyFrame(ttk.Frame):
         self.scrollbar.grid(row=1, column=2, sticky='ns')
         self.positions_table['yscrollcommand'] = self.scrollbar.set
 
-        # Run backtest button    
-        self.backtest_button = ttk.Button(right_frame, width=50, text="Run Backtest", command=self.run_backtest)
-        self.backtest_button.grid(row=2, column=0, columnspan=2, padx=2, pady=2)
-                  
+        # Run strategy button    
+        self.run_strategy_button = ttk.Button(right_frame, width=50, text="Run Strategy", command=self.run_strategy)
+        self.run_strategy_button.grid(row=2, column=0, columnspan=2, padx=2, pady=2)
+    
+    def set_active_account(self, account_meta):
+        if not account_meta.empty:
+            self.active_account = account_meta
+            self.execution_tab.cash_var.set(account_meta["cash"])
+            self.execution_tab.cash_entry.state(["disabled"])
+        elif not self.active_account:
+            self.execution_tab.cash_entry.state(["!disabled"])
+        
+    
+    def render_positions_table(self):
+        """
+        Render the positions DataFrame into the given ttk.Treeview.
+        Expects df to have columns: Symbol, Quantity, Avg Price, Current Price, P/L
+        """
+        # Clear existing rows
+        for row in self.positions_table.get_children():
+            self.positions_table.delete(row)
+
+        # Only render if an account is active
+        active_acc = self.active_account
+        if active_acc is None:
+            return
+
+        acc_id = int(active_acc.name)  # account_id is the Series.name
+        positions = persist.load_positions(acc_id)
+        if positions.empty:
+            return
+
+        # Insert updated rows
+        for _, row in positions.iterrows():
+            self.positions_table.insert(
+                "",
+                "end",
+                values=(
+                    row["symbol"],
+                    int(row["quantity"]),
+                    f"{row['avg_price']:.2f}",
+                    f"{row['current_price']:.2f}",
+                    f"{row['pl']:.2f}"
+                )
+            )
+
+                     
     def search(self, show_output=True):  
         stock_symbol = self.general_tab.stock_input.get().strip() 
         start_date = self.general_tab.start_date_input.get_date().isoformat()
@@ -432,74 +470,94 @@ class TradingStrategyFrame(ttk.Frame):
             return False
 
     
-    def run_backtest(self):
-        # Start a new session
-        acc_id = int(self.active_account.name)
-        session_id = persist.start_trade_session(acc_id, "backtest")
-        
-        # Get Backtest parameters
-        candle_data = {}
-        if not self.chart_frame.live_switch_var.get():
-            candle_data = self.search(show_output=False)
+    def run_strategy(self):
+        if self.chart_frame.live_switch_var.get():
+            # --- LIVE MODE ---
+            if not hasattr(self, "_live_running") or not self._live_running:
+                # Start live strategy
+                acc_id = int(self.active_account.name)
+                session_id = persist.start_trade_session(acc_id, "live")
+                self.current_session_id = session_id
+
+                backtest_frame = self.controller.frames[BackTestingResultsFrame]
+                backtest_frame.backtest_results = pd.DataFrame()
+
+                def _on_live_update(trade_df: pd.DataFrame):
+                    if backtest_frame.backtest_results.empty:
+                        backtest_frame.backtest_results = trade_df.copy()
+                    else:
+                        backtest_frame.backtest_results = pd.concat(
+                            [backtest_frame.backtest_results, trade_df]
+                        )
+                    backtest_frame.results_chart.results = backtest_frame.backtest_results
+                    backtest_frame.results_chart.update_chart()
+                    backtest_frame.render_trade_history()
+                    self.render_positions_table()
+
+                self._finalize_live = engine.run_live_strategy(
+                    candle_source=self.chart_frame.candle_aggregator,
+                    buy_logic=self.strategy_tab.buy_section,
+                    sell_logic=self.strategy_tab.sell_section,
+                    position_sizer_func=pos_sz.fixed_fraction_position_sizer,
+                    position_sizer_param=float(self.execution_tab.position_slider_value.get()),
+                    stop_loss_func=risk.StopLoss.average_true_range_stop if self.execution_tab.stop_loss_var.get() else None,
+                    starting_capital=float(self.execution_tab.cash_var.get()),
+                    allow_short=False,
+                    slippage=float(self.execution_tab.slippage_input.get().strip()),
+                    fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
+                    fee_min=float(self.execution_tab.minimum_fee_input.get().strip()),
+                    lot_size=int(self.execution_tab.lot_size_input.get().strip()),
+                    account_id = acc_id,
+                    session_id=session_id,
+                    ui_callback=_on_live_update,
+                )
+
+                self._live_running = True
+                self.run_strategy_button.config(text="Stop Strategy")
+
+            else:
+                # Stop live strategy
+                final_df = self._finalize_live()
+                persist.end_trade_session(session_id=self.current_session_id)
+
+                backtest_frame = self.controller.frames[BackTestingResultsFrame]
+                backtest_frame.backtest_results = final_df
+                backtest_frame.results_chart.results = final_df
+                backtest_frame.results_chart.update_chart()
+                backtest_frame.render_trade_history()
+
+                self._live_running = False
+                self.run_strategy_button.config(text="Run Strategy")
+                del self._finalize_live
+
         else:
-            candle_data = self.controller.frames[AuthFrame].streamer.candle_aggregator.get_candles()
-        if isinstance(candle_data, list):
-            candle_data = pd.DataFrame(candle_data)  
-        
-        initial_capital = self.execution_tab.starting_capital_input.get().strip()
-        if not self.is_input_valid_float(initial_capital, "Starting Capital"):
-            return
-        slippage = self.execution_tab.slippage_input.get().strip()
-        if not self.is_input_valid_float(slippage, "Slippage"):     
-            return
-        fee_rate = self.execution_tab.fee_rate_input.get().strip()
-        if not self.is_input_valid_float(fee_rate, "Fee Rate"):          
-            return
-        fee_min = self.execution_tab.minimum_fee_input.get().strip()
-        if not self.is_input_valid_float(fee_min, "Minimum Fee"):        
-            return
-        lot_size = self.execution_tab.lot_size_input.get().strip()
-        if not lot_size.isdigit():
-            return
-        sl_func = None
-        if self.execution_tab.stop_loss_var.get():
-            sl_func = risk.StopLoss.average_true_range_stop
-        fixed_fraction = self.execution_tab.position_slider_value.get()
-        if not self.is_input_valid_float(fixed_fraction, "Fixed Fraction"):        
-            return
-        try:
+            # --- BACKTEST MODE ---
+            acc_id = int(self.active_account.name)
+            session_id = persist.start_trade_session(acc_id, "backtest")
+            candle_data = pd.DataFrame(self.search(show_output=False))
             backtest_results = engine.backtest_strategy(
-                data = candle_data, 
-                buy_logic = self.strategy_tab.buy_section, 
-                sell_logic = self.strategy_tab.sell_section,
-                position_sizer_func = pos_sz.fixed_fraction_position_sizer,
-                position_sizer_param = float(fixed_fraction),
-                stop_loss_func = sl_func,
-                starting_capital = float(initial_capital),
-                allow_short = False,
-                slippage = float(slippage),
-                fee_rate = float(fee_rate),
-                fee_min = float(fee_min),
-                lot_size = int(lot_size)
+                data=candle_data,
+                buy_logic=self.strategy_tab.buy_section,
+                sell_logic=self.strategy_tab.sell_section,
+                position_sizer_func=pos_sz.fixed_fraction_position_sizer,
+                position_sizer_param=float(self.execution_tab.position_slider_value.get()),
+                stop_loss_func=risk.StopLoss.average_true_range_stop if self.execution_tab.stop_loss_var.get() else None,
+                starting_capital=float(self.execution_tab.cash_var.get()),
+                allow_short=False,
+                slippage=float(self.execution_tab.slippage_input.get().strip()),
+                fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
+                fee_min=float(self.execution_tab.minimum_fee_input.get().strip()),
+                lot_size=int(self.execution_tab.lot_size_input.get().strip()),
+                session_id=session_id,
             )
             if not backtest_results.empty:
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
                 backtest_frame.backtest_results = backtest_results
                 backtest_frame.populate_backtest_display(backtest_results)
                 backtest_frame.results_chart.results = backtest_results
-                result_settings_tab = backtest_frame.result_settings_tab    
-                result_settings_tab.populate_result_text(result_settings_tab.get_result_summary(backtest_results))    
-                backtest_frame.results_chart.update_chart() 
-                # Persist results as a trade stream and add to trade history
-                persist.insert_trade_stream(session_id, backtest_results)
-                
-            self.controller.show_main_frame(BackTestingResultsFrame, "performance")
-        except ValueError as err:
-            messagebox.showerror("Error", err)
-        finally:
-            persist.end_trade_session(session_id=session_id) 
-            backtest_frame.render_trade_history()   
-        return session_id
+                backtest_frame.results_chart.update_chart()
+                backtest_frame.render_trade_history()
+            persist.end_trade_session(session_id=session_id)
    
 class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -531,24 +589,53 @@ class CandlestickChartFrame(ttk.Frame):
         self.timeframe_control = self.create_segmented_control(self.timeframe_options, self.on_timeframe_change)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
+        
+        self.tick_queue = None
+        self.streamer = None
+        self.candle_aggregator = None
+        self._poll_job = None
     
     def toggle_live_mode(self):
         if self.live_switch_var.get(): 
-            symbol_data = qt_api.get_stock_data(
-                access_token=self.controller.frames[AuthFrame].access_token,
-                api_server=self.controller.frames[AuthFrame].api_server, 
-                symbol_str=self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
+            self.tick_queue = queue.Queue()
+            auth_frame = self.controller.frames[AuthFrame]
+            self.streamer = qt_stream.QuestradeStreamer(
+                access_token = auth_frame.access_token,
+                api_server = auth_frame.api_server,
+                tick_queue = self.tick_queue
             )
+            stock_symbol = self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
+            self.candle_aggregator = tick_processor.CandleAggregator(stock_symbol, "OneMinute")             
+            symbol_data = qt_api.get_stock_data(
+                access_token=auth_frame.access_token,
+                api_server=auth_frame.api_server, 
+                symbol_str=stock_symbol
+            )
+            symbol_id = symbol_data[0]['symbolId']
             for rb in self.timeframe_control:
                 rb.config(state=tk.DISABLED)
-            
-            symbol_id = symbol_data[0]['symbolId']
-            self.controller.frames[AuthFrame].streamer.start_stream(symbol_id)
+            self.streamer.start_stream(symbol_id)
+            self._poll_ticks()
             self.periodically_update_chart()
         else:
-            self.controller.frames[AuthFrame].streamer.stop_stream()
+            if self.streamer:
+                self.streamer.stop_stream()
+            if self._poll_job:
+                root.after_cancel(self._poll_job)
+                self._poll_job = None
+            self.tick_queue = None
             for rb in self.timeframe_control:
                 rb.config(state=tk.NORMAL)
+    
+    def _poll_ticks(self):
+        try:
+            while True:
+                tick = self.tick_queue.get_nowait()
+                self.candle_aggregator.update(tick)
+        except queue.Empty:
+            pass
+        if self.live_switch_var.get():
+            self._poll_job = root.after(100, self._poll_ticks)
         
     def toggle_show_label(self):
         if self.show_label_var.get(): 
@@ -572,7 +659,7 @@ class CandlestickChartFrame(ttk.Frame):
                                self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip())
         
     def periodically_update_chart(self):
-        candles_df = self.controller.frames[AuthFrame].streamer.candle_aggregator.get_candles()
+        candles_df = self.candle_aggregator.get_candles()
         if not candles_df.empty and self.live_switch_var.get():
             self.update_chart(candles_df)
         root.after(30000, self.periodically_update_chart)  # Update every 30 seconds     
@@ -613,7 +700,7 @@ class BackTestingResultsFrame(ttk.Frame):
         self.controller = controller
         self.backtest_results = pd.DataFrame()
         
-        result_headers = [
+        self.result_headers = [
             'price', 'signal', 'shares', 'cash', 'equity', 'market_value',
             'order', 'exec_price', 'stop_loss', 'fees', 'trade_side', 'pnl',
             'cum_max_equity', 'drawdown', 'returns'
@@ -630,7 +717,7 @@ class BackTestingResultsFrame(ttk.Frame):
         notebook.grid(row=0, column=0, sticky="nsew")  
           
         self.result_settings_tab = self.controller.create_tab(notebook, "Result Settings", 
-                                   lambda parent: ResultSettingsCollapsibleFrame(parent, self.controller, result_headers))
+                                   lambda parent: ResultSettingsCollapsibleFrame(parent, self.controller, self.result_headers))
         
         # --- Trade Session History Panel ---
         self.ts_history_frame = tk.Frame(self)
@@ -650,11 +737,9 @@ class BackTestingResultsFrame(ttk.Frame):
         self.results_chart.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
         # Treeview
-        self.backtest_display = ttk.Treeview(main_area, columns=result_headers, show="headings")
-        for col in result_headers:
-            self.backtest_display.heading(col, text=col)
-            self.backtest_display.column(col, width=100, anchor="center")
+        self.backtest_display = ttk.Treeview(main_area, columns=self.result_headers, show="headings")
         self.backtest_display.grid(row=2, column=0, padx=5, pady=5, sticky="nsew")
+        self.populate_backtest_display(self.backtest_results, self.result_headers)
 
         # Scrollbars
         self.scroll_y = ttk.Scrollbar(main_area, orient=tk.VERTICAL, command=self.backtest_display.yview)
@@ -670,10 +755,20 @@ class BackTestingResultsFrame(ttk.Frame):
 
         self.controller.add_outer_rows_and_cols(main_area)
     
-    def populate_backtest_display(self, dataframe):
+    def populate_backtest_display(self, dataframe, result_headers = None):
         self.clear_backtest_display()
+
+        if self.result_headers:
+            result_headers = self.result_headers
+        self.backtest_display["columns"] = result_headers
+        for col in result_headers:
+            self.backtest_display.heading(col, text=col)
+            self.backtest_display.column(col, anchor="center")
+
         for _, row in dataframe.iterrows():
-            self.backtest_display.insert("", "end", values=list(row))
+            values = [row[header] for header in result_headers if header in dataframe.columns]
+            self.backtest_display.insert("", "end", values=values)
+
             
     def clear_backtest_display(self):
         for row in self.backtest_display.get_children():
@@ -893,11 +988,11 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
         super().__init__(parent, title="Execution")
-        self.starting_capital_label = ttk.Label(self.content, text="Starting Capital:")
-        self.starting_capital_label.pack(anchor="w")
-        self.starting_capital_input = ttk.Entry(self.content)
-        self.starting_capital_input.insert(0, 10000.0)
-        self.starting_capital_input.pack(fill="x", pady=2)
+        self.cash_label = ttk.Label(self.content, text="Cash:")
+        self.cash_label.pack(anchor="w")
+        self.cash_var = tk.DoubleVar(value=10000.0)
+        self.cash_entry = ttk.Entry(self.content, textvariable=self.cash_var)
+        self.cash_entry.pack(fill="x", pady=2)
         self.slippage_label = ttk.Label(self.content, text="Slippage")
         self.slippage_label.pack(anchor="w")
         self.slippage_input = ttk.Entry(self.content)
@@ -1029,14 +1124,15 @@ class ResultSettingsCollapsibleFrame(CollapsibleFrame):
     
     # --- Utility functions ---   
     def populate_result_text(self, results):
-        self.result_summary.config(
-            text=(
-                f"Final Equity ($): {results['final_equity']}\n"
-                f"Profits ($): {results['profits']}\n"
-                f"Returns (%): {results['returns']}\n"
-                f"Sharpe Ratio: {results['sharpe_ratio']}"
-            )
-        )     
+        if results:
+            self.result_summary.config(
+                text=(
+                    f"Final Equity ($): {results['final_equity']}\n"
+                    f"Profits ($): {results['profits']}\n"
+                    f"Returns (%): {results['returns']}\n"
+                    f"Sharpe Ratio: {results['sharpe_ratio']}"
+                )
+            )     
     
     def get_result_summary(self, results):
         result_summary = {}
@@ -1048,7 +1144,7 @@ class ResultSettingsCollapsibleFrame(CollapsibleFrame):
             chart_frame = self.controller.frames[TradingStrategyFrame].chart_frame
             time_frame = chart_frame.time_interval
             if chart_frame.live_switch_var.get():
-                time_frame = self.controller.frames[AuthFrame].streamer.candle_aggregator.time_interval
+                time_frame = chart_frame.candle_aggregator.time_interval
             result_summary['sharpe_ratio'] = round(engine.compute_sharpe_ratio(returns = results['returns'], 
                                                                                timeframe = time_frame), 2)
         return result_summary

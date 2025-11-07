@@ -125,48 +125,54 @@ class TradingStrategy:
 
         return signals
     
-    def support_resistace_structure(data, params):
-        """
-        Implements a simple Peak/Valley Detection to find Support and Resistance Levels
-        
-        Parameters:
-            params['distance'] distance for peak/valley detection for e.g 5 means peaks are found with at least 5 candles inbetween
+    def support_resistance_structure(data: pd.DataFrame, params: dict) -> pd.DataFrame:
+       """
+       Implements a simple Peak/Valley Detection to find Support and Resistance Levels.
 
-        Returns:
-            pd.DataFrame: DataFrame containing the price,
-                          trading signals (1 for buy, 0 for hold/sell), and position changes.
+       Parameters:
+           data: DataFrame with columns ['high','low','close']
+           params['distance']: minimum separation between peaks/valleys
 
+       Returns:
+           pd.DataFrame with columns: price, high, low, signal, positions
+           
         Strategy Logic:
             Generates a buy signal (1) when the price bounces off a detected support level
             Generates a sell signal (-1) when the price rejects a detected resistance level
             Otherwise return a flat signal (0) 
-        """
-        signals = pd.DataFrame(index=data.index)
-        signals['price'] = data['close']
-        signals['high'] = data['high']
-        signals['low'] = data['low']
-        distance = int(params['distance'])
-        # Detect resistance (peaks) and Support (Valleys) in terms of their indices
-        resistance_idx, _ = find_peaks(data['high'], distance = distance)
-        support_idx, _ = find_peaks(-data['low'], distance = distance)
-        # Initialize 'signal' column with 0 (HOLD) by default
-        signals['signal'] = 0 
-        # SELL condition: index in resistance_idx AND close < high
-        sell_mask = signals.index.isin(resistance_idx) & (data['close'] < data['high'])
-        # BUY condition: index in support_idx AND close > low
-        buy_mask = signals.index.isin(support_idx) & (data['close'] > data['low'])
-        # Apply SELL (-1) and BUY (+1) signals
-        signals.loc[sell_mask, 'signal'] = -1
-        signals.loc[buy_mask, 'signal'] = 1    
-        
-        signals['positions'] = signals['signal'].diff().fillna(0)
-        
-        return signals
+       """
+       signals = pd.DataFrame(index=data.index.copy())
+       signals['price'] = data['close']
+       signals['high'] = data['high']
+       signals['low'] = data['low']
+       signals['signal'] = 0    
+       distance = int(params['distance'])   
+       # Standard confirmed peaks/valleys
+       res_idx, _ = find_peaks(signals['high'], distance=distance)
+       sup_idx, _ = find_peaks(-signals['low'], distance=distance)  
+       for i in res_idx:
+           if signals['price'].iloc[i] < signals['high'].iloc[i]:
+               signals.iloc[i, signals.columns.get_loc('signal')] = -1
+       for i in sup_idx:
+           if signals['price'].iloc[i] > signals['low'].iloc[i]:
+               signals.iloc[i, signals.columns.get_loc('signal')] = 1   
+       # --- NEW: heuristic check for the last bar ---
+       if len(signals) > distance:
+           last_i = len(signals) - 1
+           window = slice(last_i - distance, last_i)  # previous N bars     
+           if signals['high'].iloc[last_i] > signals['high'].iloc[window].max():
+               signals.iloc[last_i, signals.columns.get_loc('signal')] = -1
+           elif signals['low'].iloc[last_i] < signals['low'].iloc[window].min():
+               signals.iloc[last_i, signals.columns.get_loc('signal')] = 1  
+       signals['positions'] = signals['signal'].diff().fillna(0)
+       return signals
+
+
     
     # Map of strategy names to their corresponding methods
     trading_strategies = {
         "DMA Crossover" : double_moving_average_crossover,
         "EMA Breakout" : exponential_moving_average_breakout,
-        "S/R Structure" : support_resistace_structure,
+        "S/R Structure" : support_resistance_structure,
         "RSI" : relative_strength_index
     }
