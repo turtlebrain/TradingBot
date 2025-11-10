@@ -474,8 +474,8 @@ class TradingStrategyFrame(ttk.Frame):
         if self.chart_frame.live_switch_var.get():
             # --- LIVE MODE ---
             if not hasattr(self, "_live_running") or not self._live_running:
-                # Start live strategy
                 acc_id = int(self.active_account.name)
+                # Start live strategy
                 session_id = persist.start_trade_session(acc_id, "live")
                 self.current_session_id = session_id
 
@@ -517,6 +517,7 @@ class TradingStrategyFrame(ttk.Frame):
 
             else:
                 # Stop live strategy
+                acc_id = int(self.active_account.name)
                 final_df = self._finalize_live()
                 persist.end_trade_session(session_id=self.current_session_id)
 
@@ -525,7 +526,9 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.results = final_df
                 backtest_frame.results_chart.update_chart()
                 backtest_frame.render_trade_history()
-
+                last_cash = float(final_df["cash"].iloc[-1])
+                self.execution_tab.cash_var.set(last_cash)
+                persist.update_account(account_id=acc_id, cash=last_cash)
                 self._live_running = False
                 self.run_strategy_button.config(text="Run Strategy")
                 del self._finalize_live
