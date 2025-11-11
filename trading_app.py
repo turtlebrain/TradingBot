@@ -665,7 +665,7 @@ class CandlestickChartFrame(ttk.Frame):
         candles_df = self.candle_aggregator.get_candles()
         if not candles_df.empty and self.live_switch_var.get():
             self.update_chart(candles_df)
-        root.after(30000, self.periodically_update_chart)  # Update every 30 seconds     
+        root.after(10000, self.periodically_update_chart)  # Update every 10 seconds     
                
     def create_segmented_control(self, options, command = None):
         self.sg_var = tk.StringVar(value=options[1])
