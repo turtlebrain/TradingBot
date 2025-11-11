@@ -656,16 +656,16 @@ class CandlestickChartFrame(ttk.Frame):
             for i, row in df.iterrows()
         ]
     
-    def update_chart(self, df):
+    def update_chart(self, df, animate_last_only = False):
         self.candle_chart.clear()
         self.candle_chart.plot(self.convert_data_for_chart(df), 
-                               self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip())
+                               self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip(), animate_last_only)
         
     def periodically_update_chart(self):
         candles_df = self.candle_aggregator.get_candles()
         if not candles_df.empty and self.live_switch_var.get():
-            self.update_chart(candles_df)
-        root.after(30000, self.periodically_update_chart)  # Update every 30 seconds     
+            self.update_chart(candles_df, True)
+        root.after(3000, self.periodically_update_chart)  # Update every 3 seconds     
                
     def create_segmented_control(self, options, command = None):
         self.sg_var = tk.StringVar(value=options[1])

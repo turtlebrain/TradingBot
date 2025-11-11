@@ -8,7 +8,7 @@ class CandlestickChartNoLabels(CandlestickChart):
         self.show_labels = show_labels
         self.grid(row=0, column=0, sticky="nsew")
 
-    def plot(self, data: List[Tuple[float, float, float, float, float]], title: str = "Candlestick Chart"):
+    def plot(self, data: List[Tuple[float, float, float, float, float]], title: str = "Candlestick Chart", animation_flag: bool = False):
         """Plot an improved candlestick chart with (index, open, high, low, close) data"""
         if not data:
             raise ValueError("Data cannot be empty")
@@ -37,11 +37,13 @@ class CandlestickChartNoLabels(CandlestickChart):
         self.elements.clear()
         
         self._draw_axes(self.x_min, self.x_max, self.y_min, self.y_max)
-        self._animate_candles()
+        self._animate_candles(animate_last_only=animation_flag)
         self._add_interactive_effects()
 
-    def _animate_candles(self):
-        """Added ability through show_labels to turn on/off high/low labels."""
+    def _animate_candles(self, animate_last_only: bool = False):
+        """Animate candles. If animate_last_only=True, only the last candle animates.
+           Added ability through show_labels to turn on/off high/low labels.
+        """
         def ease(t):
             return t * t * (3 - 2 * t)
 
@@ -51,13 +53,15 @@ class CandlestickChartNoLabels(CandlestickChart):
         def update_animation(frame: int, total_frames: int):
             if not self.canvas.winfo_exists():
                 return  # widget destroyed, stop updating
-            
+
             progress = ease(frame / total_frames)
-        
+
             try:
                 for item in self.elements:
                     self.canvas.delete(item)
                 self.elements.clear()
+
+                last_index = len(self.data) - 1
 
                 for i, (index, open_price, high, low, close_price) in enumerate(self.data):
                     x = self._data_to_pixel_x(index, self.x_min, self.x_max)
@@ -69,15 +73,23 @@ class CandlestickChartNoLabels(CandlestickChart):
                     fill_color = "#4CAF50" if close_price >= open_price else "#F44336"
                     outline_color = self.style.adjust_brightness(fill_color, 0.8)
 
+                    # Decide whether this candle should animate
+                    if animate_last_only and i != last_index:
+                        candle_progress = 1.0
+                    else:
+                        candle_progress = progress
+
+                    # Candle body
                     y_mid = (y_open + y_close) / 2
-                    candle_height = abs(y_close - y_open) * progress
+                    candle_height = abs(y_close - y_open) * candle_progress
                     if candle_height < 1:
                         candle_height = 1
                     y_top = y_mid - candle_height / 2
                     y_bottom = y_mid + candle_height / 2
 
+                    # Wick
                     y_mid_wick = (y_high + y_low) / 2
-                    half_wick_length = (y_low - y_high) / 2 * progress
+                    half_wick_length = (y_low - y_high) / 2 * candle_progress
                     wick = self.canvas.create_line(
                         x, y_mid_wick - half_wick_length,
                         x, y_mid_wick + half_wick_length,
@@ -87,6 +99,7 @@ class CandlestickChartNoLabels(CandlestickChart):
                     )
                     self.elements.append(wick)
 
+                    # Shadow
                     shadow = self.canvas.create_rectangle(
                         x - candle_width/2 + 2, y_top + 2,
                         x + candle_width/2 + 2, y_bottom + 2,
@@ -96,6 +109,7 @@ class CandlestickChartNoLabels(CandlestickChart):
                     )
                     self.elements.append(shadow)
 
+                    # Candle body
                     candle = self.canvas.create_rectangle(
                         x - candle_width/2, y_top,
                         x + candle_width/2, y_bottom,
@@ -106,8 +120,8 @@ class CandlestickChartNoLabels(CandlestickChart):
                     )
                     self.elements.append(candle)
 
-                    if progress == 1 and self.show_labels is True:
-                        # High label above wick
+                    # Labels only after animation completes
+                    if candle_progress == 1 and self.show_labels:
                         high_label = self.canvas.create_text(
                             x, y_high - 10,
                             text=f"{high:.1f}",
@@ -117,7 +131,7 @@ class CandlestickChartNoLabels(CandlestickChart):
                             tags=('label', f'candle_{i}')
                         )
                         self.elements.append(high_label)
-                        # Low label below wick
+
                         low_label = self.canvas.create_text(
                             x, y_low + 10,
                             text=f"{low:.1f}",
@@ -127,15 +141,17 @@ class CandlestickChartNoLabels(CandlestickChart):
                             tags=('label', f'candle_{i}')
                         )
                         self.elements.append(low_label)
+
             except Exception as e:
                 print(f"Animation update stopped due to {type(e).__name__}: {e}")
                 return
-                
+
             if frame < total_frames:
                 self.canvas.after(20, update_animation, frame + 1, total_frames)
 
         total_frames = self.animation_duration // 20
         update_animation(0, total_frames)
+
         
 class LineChartNoLabels(LineChart):
     def __init__(self, *args, show_labels=False, **kwargs):
