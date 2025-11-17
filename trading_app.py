@@ -60,7 +60,7 @@ class TradingBotApp:
             frame.grid(row=1, column=0, sticky="nsew")
 
         # Start at login
-        self.show_frame(LoginFrame)
+        self.show_frame(TradingStrategyFrame)
      
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -332,58 +332,81 @@ class AccountDialog:
         self.top.destroy()
 
 
-class TabbedCandleStickFrame(ttk.Frame):
+class TabbedTopFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
 
-        # Chart area (row 0)
-        self.chart_area = ttk.Frame(self)
-        self.chart_area.grid(row=0, column=0, sticky="nsew")
-        self.chart_area.grid_rowconfigure(0, weight=1)
+        # Workspace area (row 0)
+        self.workspace_area = ttk.Frame(self)
+        self.workspace_area.grid(row=0, column=0, sticky="nsew")
+        self.workspace_area.grid_rowconfigure(0, weight=1)
+        self.workspace_area.grid_columnconfigure(0, weight=1)
 
-        # Tab bar (row 1, directly under chart)
+        # Tab bar (row 1)
         self.tab_bar = ttk.Frame(self)
         self.tab_bar.grid(row=1, column=0, sticky="ew", pady=4)
 
-        # Layout weights
-        self.rowconfigure(0, weight=1)   # chart expands
-        self.rowconfigure(1, weight=0)   
+        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=0)
         self.columnconfigure(0, weight=1)
 
-        self.charts = []
-        self.active_chart = None
+        self.workspaces = []
+        self.active_workspace = None
 
-        # Start with one chart
-        self.add_chart_tab()
+        self.add_workspace_tab()
 
     def _create_tab_widget(self, title, closable=True):
         tab = ttk.Frame(self.tab_bar)
         tab.pack(side="left", padx=2, pady=2)
 
-        lbl = ttk.Label(tab, text=title, width=5, anchor="center")
+        lbl = ttk.Label(tab, text=title, width=6, anchor="center")
         lbl.pack(side="left")
-        lbl.bind("<Button-1>", lambda e, t=tab: self.select_chart(t))
+        lbl.bind("<Button-1>", lambda e, t=tab: self.select_workspace(t))
 
         if closable:
             btn = ttk.Button(tab, text="✖", width=2, bootstyle=DANGER,
-                             command=lambda t=tab: self.close_chart(t))
+                             command=lambda t=tab: self.close_workspace(t))
             btn.pack(side="right")
 
         return tab
 
-    def add_chart_tab(self):
-        idx = len(self.charts) + 1
-        label = f"📈{idx}"
+    def add_workspace_tab(self):
+        idx = len(self.workspaces) + 1
+        label = f"🗂{idx}"
         closable = idx > 1
 
-        chart_frame = CandlestickChartFrame(self.chart_area, self.controller)
-        chart_frame.grid(row=0, column=0, sticky="nsew")
+        # Each workspace = sidebar + chart
+        workspace = ttk.Frame(self.workspace_area)
+        workspace.grid(row=0, column=0, sticky="nsew")
+        workspace.columnconfigure(0, weight=0)
+        workspace.columnconfigure(1, weight=1)
+        workspace.rowconfigure(0, weight=1)
+
+        # Sidebar Notebook
+        notebook = ttk.Notebook(workspace, style="TNotebook")
+        notebook.grid(row=0, column=0, sticky="ns")
+
+        self.controller.create_tab(
+            notebook, "General",
+            lambda parent: GeneralInfoCollapsibleFrame(parent, self.controller)
+        )
+        self.controller.create_tab(
+            notebook, "Strategy",
+            lambda parent: StrategyCollapsibleFrame(parent)
+        )
+        self.controller.create_tab(
+            notebook, "Execution", ExecutionCollasibleFrame
+        )
+
+        # Chart
+        chart = CandlestickChartFrame(workspace, self.controller)
+        chart.grid(row=0, column=1, sticky="nsew")
 
         tab_widget = self._create_tab_widget(label, closable)
-        self.charts.append((chart_frame, tab_widget))
+        self.workspaces.append((workspace, tab_widget))
 
-        self.select_chart(tab_widget)
+        self.select_workspace(tab_widget)
         self._refresh_plus_button()
 
     def _refresh_plus_button(self):
@@ -392,33 +415,33 @@ class TabbedCandleStickFrame(ttk.Frame):
                 child.destroy()
 
         plus = ttk.Button(self.tab_bar, text="➕", width=2, bootstyle=SUCCESS,
-                          command=self.add_chart_tab)
+                          command=self.add_workspace_tab)
         plus.is_plus = True
         plus.pack(side="left", padx=2)
 
-    def select_chart(self, tab_widget):
-        for chart, tab in self.charts:
+    def select_workspace(self, tab_widget):
+        for workspace, tab in self.workspaces:
             if tab is tab_widget:
-                chart.tkraise()
-                self.active_chart = chart
+                workspace.tkraise()
+                self.active_workspace = workspace
                 tab.configure(style="Selected.TFrame")
             else:
                 tab.configure(style="TFrame")
 
-    def close_chart(self, tab_widget):
-        if len(self.charts) <= 1:
-            print("At least one chart must remain.")
+    def close_workspace(self, tab_widget):
+        if len(self.workspaces) <= 1:
+            print("At least one workspace must remain.")
             return
 
-        for i, (chart, tab) in enumerate(self.charts):
+        for i, (workspace, tab) in enumerate(self.workspaces):
             if tab is tab_widget:
-                chart.destroy()
+                workspace.destroy()
                 tab.destroy()
-                del self.charts[i]
+                del self.workspaces[i]
                 break
 
-        if self.charts:
-            self.select_chart(self.charts[-1][1])
+        if self.workspaces:
+            self.select_workspace(self.workspaces[-1][1])
 
  
 class TradingStrategyFrame(ttk.Frame):
@@ -426,57 +449,38 @@ class TradingStrategyFrame(ttk.Frame):
         super().__init__(parent)
         self.controller = controller
         self.active_account = None
+        
+        self.rowconfigure(0, weight=3)   # top workspaces
+        self.rowconfigure(1, weight=1)   # bottom positions
+        self.columnconfigure(0, weight=1)
 
-        # --- Sidebar + main content container ---
-        self.columnconfigure(0, weight=0)  # sidebar fixed width
-        self.columnconfigure(1, weight=1)  # main content expands
-        self.rowconfigure(0, weight=1)
+        # Top frame: tabbed workspaces (sidebar + chart)
+        self.top_tabs = TabbedTopFrame(self, controller)
+        self.top_tabs.grid(row=0, column=0, sticky="nsew")
 
-        # Notebook in column 0
-        notebook = ttk.Notebook(self, style="TNotebook")
-        notebook.grid(row=0, column=0, sticky="ns")
+        # Bottom frame: positions + run button
+        bottom_frame = ttk.Frame(self)
+        bottom_frame.grid(row=1, column=0, sticky="nsew")
+        bottom_frame.columnconfigure(0, weight=1)
+        bottom_frame.rowconfigure(0, weight=1)
 
-        self.general_tab = self.controller.create_tab(
-            notebook, "General",
-            lambda parent: GeneralInfoCollapsibleFrame(parent, self.controller)
-        )
-        self.strategy_tab = self.controller.create_tab(
-            notebook, "Strategy",
-            lambda parent: StrategyCollapsibleFrame(parent)
-        )
-        self.execution_tab = self.controller.create_tab(
-            notebook, "Execution", ExecutionCollasibleFrame
-        )
-
-        # --- Right-hand content area ---
-        right_frame = ttk.Frame(self)
-        right_frame.grid(row=0, column=1, sticky="nsew")
-        right_frame.columnconfigure(0, weight=1)
-        right_frame.rowconfigure(0, weight=1)
-
-        # Chart area now uses TabbedFrame
-        self.chart_tabs = TabbedCandleStickFrame(right_frame, controller)
-        self.chart_tabs.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
-
-        # Positions Table
         cols = ("Symbol", "Quantity", "Avg Price", "Current Price", "P/L")
         self.positions_table = ttk.Treeview(
-            right_frame, columns=cols, show="headings", height=8
+            bottom_frame, columns=cols, show="headings", height=8
         )
         for col in cols:
             self.positions_table.heading(col, text=col)
             self.positions_table.column(col, anchor="center", width=100)
-        self.positions_table.grid(row=1, column=0, padx=5, pady=5, sticky="nsew")
+        self.positions_table.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
 
-        self.scrollbar = ttk.Scrollbar(right_frame, command=self.positions_table.yview)
-        self.scrollbar.grid(row=1, column=1, sticky="ns")
+        self.scrollbar = ttk.Scrollbar(bottom_frame, command=self.positions_table.yview)
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
         self.positions_table["yscrollcommand"] = self.scrollbar.set
 
-        # Run strategy button
         self.run_strategy_button = ttk.Button(
-            right_frame, width=50, text="Run Strategy", command=self.run_strategy
+            bottom_frame, width=50, text="Run Strategy", command=self.run_strategy
         )
-        self.run_strategy_button.grid(row=2, column=0, padx=2, pady=2)
+        self.run_strategy_button.grid(row=1, column=0, padx=2, pady=2)
 
     
     def set_active_account(self, account_meta):
@@ -673,6 +677,7 @@ class CandlestickChartFrame(ttk.Frame):
             bootstyle="success-round-toggle"
         )
         self.live_switch.grid(row=0, column=0, sticky="nsew")
+        
         self.show_label_var = tk.BooleanVar(value=False)  # OFF by default
         self.show_label_toggle = ttk.Checkbutton(
             self, 
@@ -683,21 +688,22 @@ class CandlestickChartFrame(ttk.Frame):
             offvalue=False
         )
         self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
+        
         self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 880, height = 495)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
+        
         self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
         self.time_interval = "OneDay"
-
         control_frame = ttk.Frame(self)
         control_frame.grid(row=2, column=0, columnspan=4, sticky="ew", pady=5)
         control_frame.grid_rowconfigure(0, weight=0)
         for i in range(len(self.timeframe_options)):
             control_frame.grid_columnconfigure(i, weight=1)
-
+            self.grid_columnconfigure(i, weight=1)
+            
         self.timeframe_buttons = self.create_segmented_control(
             control_frame, self.timeframe_options, self.on_timeframe_change
         )
-        self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
         
         self.tick_queue = None
