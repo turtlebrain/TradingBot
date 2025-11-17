@@ -332,7 +332,7 @@ class AccountDialog:
         self.top.destroy()
 
 
-class TabbedTopFrame(ttk.Frame):
+class TabbedWorkspaceFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
@@ -450,37 +450,73 @@ class TradingStrategyFrame(ttk.Frame):
         self.controller = controller
         self.active_account = None
         
-        self.rowconfigure(0, weight=3)   # top workspaces
-        self.rowconfigure(1, weight=1)   # bottom positions
-        self.columnconfigure(0, weight=1)
+        # Shared grid: 2 columns across the whole frame
+        self.columnconfigure(0, weight=0)  # sidebar + account info
+        self.columnconfigure(1, weight=1)  # charts + positions
+        self.rowconfigure(0, weight=3)     # top workspaces
+        self.rowconfigure(1, weight=1)     # bottom panels
 
-        # Top frame: tabbed workspaces (sidebar + chart)
-        self.top_tabs = TabbedTopFrame(self, controller)
-        self.top_tabs.grid(row=0, column=0, sticky="nsew")
+        # --- Top row: tabbed workspaces (already contain notebook + chart) ---
+        self.top_tabs = TabbedWorkspaceFrame(self, controller)
+        self.top_tabs.grid(row=0, column=0, columnspan=2, sticky="nsew")
 
-        # Bottom frame: positions + run button
-        bottom_frame = ttk.Frame(self)
-        bottom_frame.grid(row=1, column=0, sticky="nsew")
-        bottom_frame.columnconfigure(0, weight=1)
-        bottom_frame.rowconfigure(0, weight=1)
+        # --- Bottom row: account info + positions ---
+        # Account Info aligned under sidebar, same vertical span as table
+        account_group = ttkb.LabelFrame(self, text="Account Info", bootstyle="info")
+        account_group.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+
+        pnl_value = 5200
+        self.pnl_var = tk.StringVar(value=f"${pnl_value:,} Profit")
+        pnl_label = ttk.Label(
+            account_group,
+            textvariable=self.pnl_var,
+            bootstyle="success" if pnl_value >= 0 else "danger",
+            font=("Helvetica", 16, "bold")
+        )
+        pnl_label.pack(pady=(10, 5))
+
+        self.pnl_meter = ttkb.Meter(
+            master=account_group,
+            metersize=200,
+            amountused=abs(pnl_value),
+            amounttotal=10000,
+            metertype="semi",
+            bootstyle="success" if pnl_value >= 0 else "danger",
+            subtext="Profit" if pnl_value >= 0 else "Loss"
+        )
+        self.pnl_meter.pack(pady=10)
+
+        # Positions container (right)
+        positions_container = ttk.Frame(self)
+        positions_container.grid(row=1, column=1, sticky="nsew", padx=5, pady=5)
+        positions_container.columnconfigure(0, weight=1)
+        positions_container.rowconfigure(0, weight=1)  # table expands
+        positions_container.rowconfigure(1, weight=0)  # button fixed
+
+        # Table frame (row 0)
+        table_frame = ttk.Frame(positions_container)
+        table_frame.grid(row=0, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
 
         cols = ("Symbol", "Quantity", "Avg Price", "Current Price", "P/L")
         self.positions_table = ttk.Treeview(
-            bottom_frame, columns=cols, show="headings", height=8
+            table_frame, columns=cols, show="headings", height=8
         )
         for col in cols:
             self.positions_table.heading(col, text=col)
             self.positions_table.column(col, anchor="center", width=100)
-        self.positions_table.grid(row=0, column=0, padx=5, pady=5, sticky="nsew")
+        self.positions_table.grid(row=0, column=0, sticky="nsew")
 
-        self.scrollbar = ttk.Scrollbar(bottom_frame, command=self.positions_table.yview)
+        self.scrollbar = ttk.Scrollbar(table_frame, command=self.positions_table.yview)
         self.scrollbar.grid(row=0, column=1, sticky="ns")
         self.positions_table["yscrollcommand"] = self.scrollbar.set
 
-        self.run_strategy_button = ttk.Button(
-            bottom_frame, width=50, text="Run Strategy", command=self.run_strategy
+        self.run_strategy_button = ttkb.Button(
+            self, width=50, text="Run Strategy",
+            command=self.run_strategy, bootstyle="primary"
         )
-        self.run_strategy_button.grid(row=1, column=0, padx=2, pady=2)
+        self.run_strategy_button.grid(row=2, column=0, columnspan=2, padx=2, pady=5)
 
     
     def set_active_account(self, account_meta):
