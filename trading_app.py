@@ -60,7 +60,7 @@ class TradingBotApp:
             frame.grid(row=1, column=0, sticky="nsew")
 
         # Start at login
-        self.show_frame(TradingStrategyFrame)
+        self.show_frame(LoginFrame)
      
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -261,13 +261,31 @@ class AccountManagerFrame(ttk.Frame):
                 widget.bind("<Button-1>", lambda e, n = account_id: self.open_account(n))
             
     def on_open_trading_view(self, meta):
-        self.controller.frames[TradingStrategyFrame].set_active_account(meta)     
-        self.controller.frames[TradingStrategyFrame].chart_frame.candle_chart.clear()
-        self.controller.frames[TradingStrategyFrame].render_positions_table()
-        self.controller.frames[BackTestingResultsFrame].results_chart.chart.clear()
-        self.controller.frames[BackTestingResultsFrame].clear_backtest_display()
-        self.controller.frames[BackTestingResultsFrame].render_trade_history()
+        """
+        Open the trading view for the given account metadata.
+        Sets the active account, refreshes account info, clears charts,
+        and reloads positions/backtest data.
+        """
+        # Get references to frames
+        trading_frame = self.controller.frames[TradingStrategyFrame]
+        backtest_frame = self.controller.frames[BackTestingResultsFrame]
+
+        # --- Activate account and refresh account info ---
+        trading_frame.set_active_account(meta)
+        trading_frame.update_account_info()
+
+        # --- Clear and refresh trading chart + positions ---
+        trading_frame.chart_frame.candle_chart.clear()
+        trading_frame.render_positions_table()
+
+        # --- Clear and refresh backtesting results ---
+        backtest_frame.results_chart.chart.clear()
+        backtest_frame.clear_backtest_display()
+        backtest_frame.render_trade_history()
+
+        # --- Show trading frame ---
         self.controller.show_main_frame(TradingStrategyFrame, "trading")
+
         
     def create_account(self):
         dialog = AccountDialog(self)
@@ -449,51 +467,53 @@ class TradingStrategyFrame(ttk.Frame):
         super().__init__(parent)
         self.controller = controller
         self.active_account = None
-        
-        # Shared grid: 2 columns across the whole frame
-        self.columnconfigure(0, weight=0)  # sidebar + account info
-        self.columnconfigure(1, weight=1)  # charts + positions
-        self.rowconfigure(0, weight=3)     # top workspaces
-        self.rowconfigure(1, weight=1)     # bottom panels
 
-        # --- Top row: tabbed workspaces (already contain notebook + chart) ---
+        # --- Cash variable (defaults to 10,000) ---
+        self.cash_var = tk.DoubleVar(value=10000.0)
+
+        # Shared grid: 2 columns across the whole frame
+        self.columnconfigure(0, weight=0)
+        self.columnconfigure(1, weight=1)
+        self.rowconfigure(0, weight=3)
+        self.rowconfigure(1, weight=1)
+
+        # --- Top row: tabbed workspaces ---
         self.top_tabs = TabbedWorkspaceFrame(self, controller)
         self.top_tabs.grid(row=0, column=0, columnspan=2, sticky="nsew")
 
         # --- Bottom row: account info + positions ---
-        # Account Info aligned under sidebar, same vertical span as table
         account_group = ttkb.LabelFrame(self, text="Account Info", bootstyle="info")
         account_group.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
 
-        pnl_value = 5200
-        self.pnl_var = tk.StringVar(value=f"${pnl_value:,} Profit")
+        # Label bound to cash_var
+        self.pnl_var = tk.StringVar(value=f"${self.cash_var.get():,.2f} Cash")
         pnl_label = ttk.Label(
             account_group,
             textvariable=self.pnl_var,
-            bootstyle="success" if pnl_value >= 0 else "danger",
+            bootstyle="info",
             font=("Helvetica", 16, "bold")
         )
         pnl_label.pack(pady=(10, 5))
 
+        # Meter (values updated in update_account_info)
         self.pnl_meter = ttkb.Meter(
             master=account_group,
             metersize=200,
-            amountused=abs(pnl_value),
-            amounttotal=10000,
+            amountused=0,
+            amounttotal=1,
             metertype="semi",
-            bootstyle="success" if pnl_value >= 0 else "danger",
-            subtext="Profit" if pnl_value >= 0 else "Loss"
+            bootstyle="secondary",
+            subtext="N/A"
         )
         self.pnl_meter.pack(pady=10)
 
-        # Positions container (right)
+        # Positions container (unchanged)
         positions_container = ttk.Frame(self)
         positions_container.grid(row=1, column=1, sticky="nsew", padx=5, pady=5)
         positions_container.columnconfigure(0, weight=1)
-        positions_container.rowconfigure(0, weight=1)  # table expands
-        positions_container.rowconfigure(1, weight=0)  # button fixed
+        positions_container.rowconfigure(0, weight=1)
+        positions_container.rowconfigure(1, weight=0)
 
-        # Table frame (row 0)
         table_frame = ttk.Frame(positions_container)
         table_frame.grid(row=0, column=0, sticky="nsew")
         table_frame.columnconfigure(0, weight=1)
@@ -518,16 +538,60 @@ class TradingStrategyFrame(ttk.Frame):
         )
         self.run_strategy_button.grid(row=2, column=0, columnspan=2, padx=2, pady=5)
 
+        # Initialize account info
+        self.update_account_info()
+
+
+    def update_account_info(self):
+        """
+        Refresh Account Info panel:
+        - Label shows cash_var
+        - Meter shows P&L relative to equity
+        """
+        active_acc = self.active_account
+
+        # Load positions if account is active
+        if active_acc is not None:
+            acc_id = int(active_acc.name)
+            positions = persist.load_positions(acc_id)
+            pnl_value = positions["pl"].sum()
+        else:
+            pnl_value = 0
+
+        cash_value = self.cash_var.get()
+        final_equity = cash_value + pnl_value
+
+        # Update label
+        self.pnl_var.set(f"${cash_value:,.2f} Cash")
+
+        # Update meter
+        amountused = abs(pnl_value)
+        amounttotal = abs(final_equity) if final_equity != 0 else 1
+
+        self.pnl_meter.configure(
+            amountused=min(amountused, amounttotal),
+            amounttotal=amounttotal,
+            bootstyle="success" if pnl_value >= 0 else "danger",
+            subtext="Profit" if pnl_value >= 0 else (
+                "Loss" if amountused <= amounttotal else "Overdrawn"
+            )
+        )
     
     def set_active_account(self, account_meta):
-        if not account_meta.empty:
+        """
+        Set the active account. If valid, update cash_var from metadata.
+        Otherwise, default to 10,000.
+        """
+        if account_meta is not None and not account_meta.empty:
             self.active_account = account_meta
-            self.execution_tab.cash_var.set(account_meta["cash"])
-            self.execution_tab.cash_entry.state(["disabled"])
-        elif not self.active_account:
-            self.execution_tab.cash_entry.state(["!disabled"])
-        
-    
+            self.cash_var.set(float(account_meta.get("cash", 10000)))
+        else:
+            self.active_account = None
+            self.cash_var.set(10000.0)
+
+        # Refresh account info panel
+        self.update_account_info()
+         
     def render_positions_table(self):
         """
         Render the positions DataFrame into the given ttk.Treeview.
@@ -1140,11 +1204,6 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
         super().__init__(parent, title="Execution")
-        self.cash_label = ttk.Label(self.content, text="Cash:")
-        self.cash_label.pack(anchor="w")
-        self.cash_var = tk.DoubleVar(value=10000.0)
-        self.cash_entry = ttk.Entry(self.content, textvariable=self.cash_var)
-        self.cash_entry.pack(fill="x", pady=2)
         self.slippage_label = ttk.Label(self.content, text="Slippage")
         self.slippage_label.pack(anchor="w")
         self.slippage_input = ttk.Entry(self.content)
