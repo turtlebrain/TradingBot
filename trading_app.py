@@ -739,6 +739,7 @@ class TradingStrategyFrame(ttk.Frame):
                     backtest_frame.results_chart.update_chart()
                     backtest_frame.render_trade_history()
                     self.render_positions_table()
+                    self.update_account_info()
 
                 self._finalize_live = engine.run_live_strategy(
                     candle_source=self.top_tabs.get_active_chart().candle_aggregator,
