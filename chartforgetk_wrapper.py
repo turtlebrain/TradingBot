@@ -1,6 +1,8 @@
 from ChartForgeTK import CandlestickChart
 from ChartForgeTK import LineChart
 from typing import List, Tuple
+import tkinter as tk
+from tkinter import ttk
 
 class CandlestickChartNoLabels(CandlestickChart):
     def __init__(self, *args, show_labels=False, **kwargs):
@@ -151,6 +153,115 @@ class CandlestickChartNoLabels(CandlestickChart):
 
         total_frames = self.animation_duration // 20
         update_animation(0, total_frames)
+    
+    def _add_interactive_effects(self):
+        """Add enhanced hover effects and tooltips"""
+        tooltip = tk.Toplevel()
+        tooltip.withdraw()
+        tooltip.overrideredirect(True)
+        tooltip.attributes('-topmost', True)
+        
+        tooltip_frame = ttk.Frame(tooltip, style='Tooltip.TFrame')
+        tooltip_frame.pack(fill='both', expand=True)
+        label = ttk.Label(tooltip_frame, style='Tooltip.TLabel', font=self.style.TOOLTIP_FONT)
+        label.pack(padx=8, pady=4)
+        
+        style = ttk.Style()
+        style.configure('Tooltip.TFrame', background=self.style.TEXT, relief='solid', borderwidth=0)
+        style.configure('Tooltip.TLabel', background=self.style.TEXT, foreground=self.style.BACKGROUND,
+                       font=self.style.TOOLTIP_FONT)
+        
+        current_highlight = None
+        
+        def on_motion(event):
+            nonlocal current_highlight
+            x, y = event.x, event.y
+
+            # Only respond if inside chart area
+            if self.padding <= x <= self.width - self.padding and self.padding <= y <= self.height - self.padding:
+                candle_spacing = (self.width - 2 * self.padding) / (len(self.data) if len(self.data) > 1 else 1)
+                candle_width = candle_spacing * self.candle_width_factor
+                candle_index = int((x - self.padding) / candle_spacing)
+
+                if 0 <= candle_index < len(self.data):
+                    index, open_price, high, low, close_price = self.data[candle_index]
+                    px = self._data_to_pixel_x(index, self.x_min, self.x_max)
+                    y_high = self._data_to_pixel_y(high, self.y_min, self.y_max)
+                    y_low = self._data_to_pixel_y(low, self.y_min, self.y_max)
+                    y_open = self._data_to_pixel_y(open_price, self.y_min, self.y_max)
+                    y_close = self._data_to_pixel_y(close_price, self.y_min, self.y_max)
+                    y_top = min(y_open, y_close)
+                    y_bottom = max(y_open, y_close)
+
+                    # Bounding-box check: only show tooltip if cursor is inside candle bounds
+                    if (px - candle_width/2 <= x <= px + candle_width/2) and (y_high <= y <= y_low):
+                        if current_highlight:
+                            self.canvas.delete(current_highlight)
+
+                        highlight = self.canvas.create_rectangle(
+                            px - candle_width/2 - 3, y_high - 3,
+                            px + candle_width/2 + 3, y_low + 3,
+                            outline=self.style.ACCENT,
+                            width=2,
+                            dash=(4, 2),
+                            tags=('highlight',)
+                        )
+                        current_highlight = highlight
+
+                        change = close_price - open_price
+                        pct_change = (change / open_price * 100) if open_price != 0 else 0
+                        label.config(
+                            text=(
+                                f"Index: {index:.1f}\n"
+                                f"Open: {open_price:.2f}\n"
+                                f"High: {high:.2f}\n"
+                                f"Low: {low:.2f}\n"
+                                f"Close: {close_price:.2f}\n"
+                                f"Change: {change:.2f} ({pct_change:.1f}%)"
+                            )
+                        )
+                        tooltip.wm_geometry(f"+{event.x_root+15}+{event.y_root-50}")
+                        tooltip.deiconify()
+                        tooltip.lift()
+                        return  # Exit early since tooltip is shown
+
+            # If not inside a valid candle, clean up
+            if current_highlight:
+                self.canvas.delete(current_highlight)
+                current_highlight = None
+            tooltip.withdraw()
+        
+        def on_leave(event):
+            nonlocal current_highlight
+            if current_highlight:
+                self.canvas.delete(current_highlight)
+                current_highlight = None
+            tooltip.withdraw()
+        
+        self.canvas.bind('<Motion>', on_motion)
+        self.canvas.bind('<Leave>', on_leave)
+        self.bind('<Enter>', lambda e: tooltip.withdraw())
+        
+        def watchdog_hide():
+            x, y = self.winfo_pointerx(), self.winfo_pointery()
+            # Convert to canvas coords
+            cx = self.canvas.winfo_rootx()
+            cy = self.canvas.winfo_rooty()
+            cw = self.canvas.winfo_width()
+            ch = self.canvas.winfo_height()
+        
+            if not (cx <= x <= cx+cw and cy <= y <= cy+ch):
+                tooltip.withdraw()
+                if current_highlight:
+                    self.canvas.delete(current_highlight)
+        
+            # Re‑schedule watchdog
+            self.canvas.after(200, watchdog_hide)
+        
+        # Start watchdog once
+        self.canvas.after(200, watchdog_hide)
+
+
 
         
 class LineChartNoLabels(LineChart):
