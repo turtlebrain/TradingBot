@@ -29,7 +29,7 @@ class TradingBotApp:
     def __init__(self, root):
         self.root = root
         self.root.title("TradingBot")
-        self.root.geometry("1496x842")
+        self.root.geometry("1440x900")
         self.system_running = False
 
         # Initialize database
@@ -199,7 +199,7 @@ class AuthFrame(ttk.Frame):
                 self.api_server = refresh_token_data.get('api_server', '')   
                 self.access_token = refresh_token_data.get('access_token', '')
                 self.refresh_token = refresh_token_data.get('refresh_token', '')  
-                streamer = self.controller.frames[TradingStrategyFrame].chart_frame.streamer 
+                streamer = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_chart().streamer 
                 if streamer:
                     streamer.access_token = self.access_token
                     streamer.api_server = self.api_server
@@ -266,24 +266,23 @@ class AccountManagerFrame(ttk.Frame):
         Sets the active account, refreshes account info, clears charts,
         and reloads positions/backtest data.
         """
-        # Get references to frames
         trading_frame = self.controller.frames[TradingStrategyFrame]
         backtest_frame = self.controller.frames[BackTestingResultsFrame]
 
-        # --- Activate account and refresh account info ---
+        # Activate account and refresh account info
         trading_frame.set_active_account(meta)
         trading_frame.update_account_info()
 
-        # --- Clear and refresh trading chart + positions ---
-        trading_frame.chart_frame.candle_chart.clear()
+        # Clear charts via TabbedWorkspaceFrame and refresh positions
+        trading_frame.top_tabs.clear_all_charts()
         trading_frame.render_positions_table()
 
-        # --- Clear and refresh backtesting results ---
+        # Reset backtesting results
         backtest_frame.results_chart.chart.clear()
         backtest_frame.clear_backtest_display()
         backtest_frame.render_trade_history()
 
-        # --- Show trading frame ---
+        # Show trading frame
         self.controller.show_main_frame(TradingStrategyFrame, "trading")
 
         
@@ -369,10 +368,46 @@ class TabbedWorkspaceFrame(ttk.Frame):
         self.rowconfigure(1, weight=0)
         self.columnconfigure(0, weight=1)
 
+        # Store tuples: (workspace_frame, tab_widget, chart_frame, general_tab, strategy_tab, execution_tab)
         self.workspaces = []
         self.active_workspace = None
 
         self.add_workspace_tab()
+
+    def add_workspace_tab(self):
+        idx = len(self.workspaces) + 1
+        label = f"🗂{idx}"
+        closable = idx > 1
+
+        workspace = ttk.Frame(self.workspace_area)
+        workspace.grid(row=0, column=0, sticky="nsew")
+        workspace.columnconfigure(0, weight=0)
+        workspace.columnconfigure(1, weight=1)
+        workspace.rowconfigure(0, weight=1)
+
+        # Sidebar Notebook
+        notebook = ttk.Notebook(workspace, style="TNotebook")
+        notebook.grid(row=0, column=0, sticky="ns")
+
+        general_tab = GeneralInfoCollapsibleFrame(notebook, self.controller)
+        strategy_tab = StrategyCollapsibleFrame(notebook)
+        execution_tab = ExecutionCollasibleFrame(notebook)
+
+        notebook.add(general_tab, text="General")
+        notebook.add(strategy_tab, text="Strategy")
+        notebook.add(execution_tab, text="Execution")
+
+        # Chart
+        chart = CandlestickChartFrame(workspace, self.controller)
+        chart.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+
+        tab_widget = self._create_tab_widget(label, closable)
+        self.workspaces.append((workspace, tab_widget, chart, general_tab, strategy_tab, execution_tab))
+
+        self.select_workspace(tab_widget)
+        self._refresh_plus_button()
+
+
 
     def _create_tab_widget(self, title, closable=True):
         tab = ttk.Frame(self.tab_bar)
@@ -389,44 +424,6 @@ class TabbedWorkspaceFrame(ttk.Frame):
 
         return tab
 
-    def add_workspace_tab(self):
-        idx = len(self.workspaces) + 1
-        label = f"🗂{idx}"
-        closable = idx > 1
-
-        # Each workspace = sidebar + chart
-        workspace = ttk.Frame(self.workspace_area)
-        workspace.grid(row=0, column=0, sticky="nsew")
-        workspace.columnconfigure(0, weight=0)
-        workspace.columnconfigure(1, weight=1)
-        workspace.rowconfigure(0, weight=1)
-
-        # Sidebar Notebook
-        notebook = ttk.Notebook(workspace, style="TNotebook")
-        notebook.grid(row=0, column=0, sticky="ns")
-
-        self.controller.create_tab(
-            notebook, "General",
-            lambda parent: GeneralInfoCollapsibleFrame(parent, self.controller)
-        )
-        self.controller.create_tab(
-            notebook, "Strategy",
-            lambda parent: StrategyCollapsibleFrame(parent)
-        )
-        self.controller.create_tab(
-            notebook, "Execution", ExecutionCollasibleFrame
-        )
-
-        # Chart
-        chart = CandlestickChartFrame(workspace, self.controller)
-        chart.grid(row=0, column=1, sticky="nsew")
-
-        tab_widget = self._create_tab_widget(label, closable)
-        self.workspaces.append((workspace, tab_widget))
-
-        self.select_workspace(tab_widget)
-        self._refresh_plus_button()
-
     def _refresh_plus_button(self):
         for child in self.tab_bar.winfo_children():
             if getattr(child, "is_plus", False):
@@ -438,7 +435,10 @@ class TabbedWorkspaceFrame(ttk.Frame):
         plus.pack(side="left", padx=2)
 
     def select_workspace(self, tab_widget):
-        for workspace, tab in self.workspaces:
+        """
+        Raise the selected workspace and mark it active.
+        """
+        for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
             if tab is tab_widget:
                 workspace.tkraise()
                 self.active_workspace = workspace
@@ -447,11 +447,14 @@ class TabbedWorkspaceFrame(ttk.Frame):
                 tab.configure(style="TFrame")
 
     def close_workspace(self, tab_widget):
+        """
+        Close the given workspace tab, ensuring at least one remains.
+        """
         if len(self.workspaces) <= 1:
             print("At least one workspace must remain.")
             return
 
-        for i, (workspace, tab) in enumerate(self.workspaces):
+        for i, (workspace, tab, chart, general_tab, strategy_tab, execution_tab) in enumerate(self.workspaces):
             if tab is tab_widget:
                 workspace.destroy()
                 tab.destroy()
@@ -459,7 +462,48 @@ class TabbedWorkspaceFrame(ttk.Frame):
                 break
 
         if self.workspaces:
+            # Select the last remaining tab
             self.select_workspace(self.workspaces[-1][1])
+            
+   # --- Helpers for active workspace ---
+    def get_active_chart(self):
+        for workspace, tab, chart, *_ in self.workspaces:
+            if workspace is self.active_workspace:
+                return chart
+        return None
+
+    def get_active_general_tab(self):
+        for workspace, tab, chart, general_tab, *_ in self.workspaces:
+            if workspace is self.active_workspace:
+                return general_tab
+        return None
+
+    def get_active_strategy_tab(self):
+        for workspace, tab, chart, _, strategy_tab, _ in self.workspaces:
+            if workspace is self.active_workspace:
+                return strategy_tab
+        return None
+
+    def get_active_execution_tab(self):
+        for workspace, tab, chart, _, _, execution_tab in self.workspaces:
+            if workspace is self.active_workspace:
+                return execution_tab
+        return None
+
+    def clear_active_chart(self):
+        """Clear the chart in the currently active workspace."""
+        if not self.active_workspace:
+            return
+        for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
+            if workspace is self.active_workspace:
+                chart.candle_chart.clear()
+                break
+            
+            
+    def clear_all_charts(self):
+        """Clear charts in all workspaces."""
+        for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
+            chart.candle_chart.clear()
 
  
 class TradingStrategyFrame(ttk.Frame):
@@ -627,9 +671,9 @@ class TradingStrategyFrame(ttk.Frame):
 
                      
     def search(self, show_output=True):  
-        stock_symbol = self.general_tab.stock_input.get().strip() 
-        start_date = self.general_tab.start_date_input.get_date().isoformat()
-        end_date = self.general_tab.end_date_input.get_date().isoformat()
+        stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip() 
+        start_date = self.top_tabs.get_active_general_tab().start_date_input.get_date().isoformat()
+        end_date = self.top_tabs.get_active_general_tab().end_date_input.get_date().isoformat()
         if not stock_symbol or not start_date or not end_date:
             messagebox.showwarning("Input Error", "Please enter a valid stock symbol as query.")
             return
@@ -645,19 +689,19 @@ class TradingStrategyFrame(ttk.Frame):
                 print("No data found for:", stock_symbol)
                 return
             symbol_id = symbol_data[0]['symbolId']
-            chart_frame = self.chart_frame
+            active_chart = self.top_tabs.get_active_chart()
             candle_data = qt_api.get_candles_paginated(
                 access_token=my_access_token, 
                 api_server=my_api_server, 
                 symbol_id=symbol_id, 
-                start_date=self.general_tab.start_date_input.get_date(), 
-                end_date=self.general_tab.end_date_input.get_date(),
-                interval= chart_frame.time_interval
+                start_date=self.top_tabs.get_active_general_tab().start_date_input.get_date(), 
+                end_date=self.top_tabs.get_active_general_tab().end_date_input.get_date(),
+                interval= active_chart.time_interval
             )
             candle_data_pd = pd.DataFrame(candle_data)
             if show_output:
                 # Plot candlestick chart
-                chart_frame.update_chart(candle_data_pd)
+                active_chart.update_chart(candle_data_pd)
             return candle_data
         except requests.exceptions.HTTPError as err:
             messagebox.showerror("Error", f"HTTP error occurered {err}")           
@@ -673,7 +717,7 @@ class TradingStrategyFrame(ttk.Frame):
 
     
     def run_strategy(self):
-        if self.chart_frame.live_switch_var.get():
+        if self.top_tabs.get_active_chart().live_switch_var.get():
             # --- LIVE MODE ---
             if not hasattr(self, "_live_running") or not self._live_running:
                 acc_id = int(self.active_account.name)
@@ -697,7 +741,7 @@ class TradingStrategyFrame(ttk.Frame):
                     self.render_positions_table()
 
                 self._finalize_live = engine.run_live_strategy(
-                    candle_source=self.chart_frame.candle_aggregator,
+                    candle_source=self.top_tabs.get_active_chart().candle_aggregator,
                     buy_logic=self.strategy_tab.buy_section,
                     sell_logic=self.strategy_tab.sell_section,
                     position_sizer_func=pos_sz.fixed_fraction_position_sizer,
@@ -789,7 +833,7 @@ class CandlestickChartFrame(ttk.Frame):
         )
         self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
         
-        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 880, height = 495)
+        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 800, height = 450)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
         
         self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
@@ -820,7 +864,7 @@ class CandlestickChartFrame(ttk.Frame):
                 api_server = auth_frame.api_server,
                 tick_queue = self.tick_queue
             )
-            stock_symbol = self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
+            stock_symbol = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip()
             self.candle_aggregator = tick_processor.CandleAggregator(stock_symbol, "OneMinute")             
             symbol_data = qt_api.get_stock_data(
                 access_token=auth_frame.access_token,
@@ -872,7 +916,7 @@ class CandlestickChartFrame(ttk.Frame):
     def update_chart(self, df, animate_last_only = False):
         self.candle_chart.clear()
         self.candle_chart.plot(self.convert_data_for_chart(df), 
-                               self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip(), animate_last_only)
+                               self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip(), animate_last_only)
         
     def periodically_update_chart(self):
         candles_df = self.candle_aggregator.get_candles()
@@ -1352,10 +1396,10 @@ class ResultSettingsCollapsibleFrame(CollapsibleFrame):
             result_summary['final_equity'] = round(results['equity'].iloc[-1], 2)
             result_summary['profits'] = round(result_summary['final_equity'] - initial_equity, 2)
             result_summary['returns'] = round((result_summary['profits'] / initial_equity) * 100, 2)
-            chart_frame = self.controller.frames[TradingStrategyFrame].chart_frame
-            time_frame = chart_frame.time_interval
-            if chart_frame.live_switch_var.get():
-                time_frame = chart_frame.candle_aggregator.time_interval
+            active_chart = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_chart()
+            time_frame = active_chart.time_interval
+            if active_chart.live_switch_var.get():
+                time_frame = active_chart.candle_aggregator.time_interval
             result_summary['sharpe_ratio'] = round(engine.compute_sharpe_ratio(returns = results['returns'], 
                                                                                timeframe = time_frame), 2)
         return result_summary
