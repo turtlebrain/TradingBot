@@ -839,7 +839,7 @@ class CandlestickChartFrame(ttk.Frame):
         self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
         self.time_interval = "OneDay"
         control_frame = ttk.Frame(self)
-        control_frame.grid(row=2, column=0, columnspan=4, sticky="ew", pady=5)
+        control_frame.grid(row=2, column=0, columnspan=4, sticky="ew")
         control_frame.grid_rowconfigure(0, weight=0)
         for i in range(len(self.timeframe_options)):
             control_frame.grid_columnconfigure(i, weight=1)
