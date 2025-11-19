@@ -447,22 +447,22 @@ class TabbedWorkspaceFrame(ttk.Frame):
                 tab.configure(style="TFrame")
 
     def close_workspace(self, tab_widget):
-        """
-        Close the given workspace tab, ensuring at least one remains.
-        """
         if len(self.workspaces) <= 1:
             print("At least one workspace must remain.")
             return
 
         for i, (workspace, tab, chart, general_tab, strategy_tab, execution_tab) in enumerate(self.workspaces):
             if tab is tab_widget:
+                # Ask chart to clean up first
+                chart.shutdown()
+
+                # Now destroy UI
                 workspace.destroy()
                 tab.destroy()
                 del self.workspaces[i]
                 break
 
         if self.workspaces:
-            # Select the last remaining tab
             self.select_workspace(self.workspaces[-1][1])
             
    # --- Helpers for active workspace ---
@@ -742,17 +742,17 @@ class TradingStrategyFrame(ttk.Frame):
 
                 self._finalize_live = engine.run_live_strategy(
                     candle_source=self.top_tabs.get_active_chart().candle_aggregator,
-                    buy_logic=self.strategy_tab.buy_section,
-                    sell_logic=self.strategy_tab.sell_section,
+                    buy_logic=self.top_tabs.get_active_strategy_tab().buy_section,
+                    sell_logic=self.top_tabs.get_active_strategy_tab().sell_section,
                     position_sizer_func=pos_sz.fixed_fraction_position_sizer,
-                    position_sizer_param=float(self.execution_tab.position_slider_value.get()),
-                    stop_loss_func=risk.StopLoss.average_true_range_stop if self.execution_tab.stop_loss_var.get() else None,
-                    starting_capital=float(self.execution_tab.cash_var.get()),
+                    position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
+                    stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
+                    starting_capital=float(self.cash_var.get()),
                     allow_short=False,
-                    slippage=float(self.execution_tab.slippage_input.get().strip()),
-                    fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
-                    fee_min=float(self.execution_tab.minimum_fee_input.get().strip()),
-                    lot_size=int(self.execution_tab.lot_size_input.get().strip()),
+                    slippage=float(self.top_tabs.get_active_execution_tab().slippage_input.get().strip()),
+                    fee_rate=float(self.top_tabs.get_active_execution_tab().fee_rate_input.get().strip()),
+                    fee_min=float(self.top_tabs.get_active_execution_tab().minimum_fee_input.get().strip()),
+                    lot_size=int(self.top_tabs.get_active_execution_tab().lot_size_input.get().strip()),
                     account_id = acc_id,
                     session_id=session_id,
                     ui_callback=_on_live_update,
@@ -773,7 +773,8 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.update_chart()
                 backtest_frame.render_trade_history()
                 last_cash = float(final_df["cash"].iloc[-1])
-                self.execution_tab.cash_var.set(last_cash)
+                self.cash_var.set(last_cash)
+                self.update_account_info()
                 persist.update_account(account_id=acc_id, cash=last_cash)
                 self._live_running = False
                 self.run_strategy_button.config(text="Run Strategy")
@@ -786,17 +787,17 @@ class TradingStrategyFrame(ttk.Frame):
             candle_data = pd.DataFrame(self.search(show_output=False))
             backtest_results = engine.backtest_strategy(
                 data=candle_data,
-                buy_logic=self.strategy_tab.buy_section,
-                sell_logic=self.strategy_tab.sell_section,
+                buy_logic=self.top_tabs.get_active_strategy_tab().buy_section,
+                sell_logic=self.top_tabs.get_active_strategy_tab().sell_section,
                 position_sizer_func=pos_sz.fixed_fraction_position_sizer,
-                position_sizer_param=float(self.execution_tab.position_slider_value.get()),
-                stop_loss_func=risk.StopLoss.average_true_range_stop if self.execution_tab.stop_loss_var.get() else None,
-                starting_capital=float(self.execution_tab.cash_var.get()),
+                position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
+                stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
+                starting_capital=float(self.cash_var.get()),
                 allow_short=False,
-                slippage=float(self.execution_tab.slippage_input.get().strip()),
-                fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
-                fee_min=float(self.execution_tab.minimum_fee_input.get().strip()),
-                lot_size=int(self.execution_tab.lot_size_input.get().strip()),
+                slippage=float(self.top_tabs.get_active_execution_tab().slippage_input.get().strip()),
+                fee_rate=float(self.top_tabs.get_active_execution_tab().fee_rate_input.get().strip()),
+                fee_min=float(self.top_tabs.get_active_execution_tab().minimum_fee_input.get().strip()),
+                lot_size=int(self.top_tabs.get_active_execution_tab().lot_size_input.get().strip()),
                 session_id=session_id,
             )
             if not backtest_results.empty:
@@ -872,7 +873,7 @@ class CandlestickChartFrame(ttk.Frame):
                 symbol_str=stock_symbol
             )
             symbol_id = symbol_data[0]['symbolId']
-            for rb in self.timeframe_control:
+            for rb in self.timeframe_buttons:
                 rb.config(state=tk.DISABLED)
             self.streamer.start_stream(symbol_id)
             self._poll_ticks()
@@ -881,11 +882,45 @@ class CandlestickChartFrame(ttk.Frame):
             if self.streamer:
                 self.streamer.stop_stream()
             if self._poll_job:
-                root.after_cancel(self._poll_job)
+                self.after_cancel(self._poll_job)
                 self._poll_job = None
+            if self._update_job:
+                self.after_cancel(self._update_job)
+                self._update_job = None
             self.tick_queue = None
-            for rb in self.timeframe_control:
+            for rb in self.timeframe_buttons:
                 rb.config(state=tk.NORMAL)
+    
+    def shutdown(self):
+        """Gracefully stop live streaming and background jobs."""
+        if self.live_switch_var.get():
+            # Turn off live mode first
+            try:
+                self.toggle_live_mode()  # or explicitly stop streamer/aggregator
+                print("Live mode disabled before closing chart.")
+            except Exception as e:
+                print(f"Error disabling live mode: {e}")
+
+        # Cancel any polling jobs
+        if self._poll_job is not None:
+            self.after_cancel(self._poll_job)
+            self._poll_job = None
+
+        # Close streamer/aggregator if they exist
+        if self.streamer is not None:
+            try:
+                self.streamer.stop_stream()
+            except Exception as e:
+                print(f"Error closing streamer: {e}")
+            self.streamer = None
+
+        if self.candle_aggregator is not None:
+            try:
+                self.candle_aggregator.clear_subscribers()
+            except Exception as e:
+                print(f"Error stopping aggregator: {e}")
+            self.candle_aggregator = None
+
     
     def _poll_ticks(self):
         try:
@@ -922,7 +957,12 @@ class CandlestickChartFrame(ttk.Frame):
         candles_df = self.candle_aggregator.get_candles()
         if not candles_df.empty and self.live_switch_var.get():
             self.update_chart(candles_df, True)
-        root.after(3000, self.periodically_update_chart)  # Update every 3 seconds     
+    
+        # reschedule only if live mode is still on
+        if self.live_switch_var.get():
+            self._update_job = self.after(3000, self.periodically_update_chart)
+        else:
+            self._update_job = None
                
     def create_segmented_control(self, parent, options, command=None):
         sg_var = tk.StringVar(value=options[1])
