@@ -200,7 +200,7 @@ class AuthFrame(ttk.Frame):
                 self.refresh_token = refresh_token_data.get('refresh_token', '')   
 
                 # Schedule UI-safe update
-                self.after(0, self._update_streamer, refresh_token_data)
+                self.after(0, self._update_streamer)
 
                 self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
                     seconds=refresh_token_data.get("expires_in", 0)
@@ -209,7 +209,7 @@ class AuthFrame(ttk.Frame):
                 print("Failed to refresh token:", e)
                 time.sleep(30)
 
-    def _update_streamer(self, refresh_token_data):
+    def _update_streamer(self):
         streamer = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_chart().streamer
         if streamer:
             streamer.access_token = self.access_token
