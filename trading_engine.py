@@ -199,7 +199,7 @@ def run_live_strategy(
     sell_logic,
     position_sizer_func,
     position_sizer_param,
-    stop_loss_func,
+    stop_loss_func=None,
     starting_capital=10000.0,
     allow_short=False,
     slippage=0.001,
@@ -209,42 +209,114 @@ def run_live_strategy(
     account_id=None,
     session_id=None,
     ui_callback=None,
-    history_window=500    # Number of last candles kept
-    ):
+    history_window=500,
+):
     """
     Run a trading strategy in live paper mode using streaming candles only.
-    Processes each new candle as it arrives, applies strategy logic, and
-    persists TradeRecords and PositionRecord incrementally.
+    Resumes from existing account and positions if account_id is provided.
+    Only processes candles for symbols that match existing positions or
+    the candle_source symbol.
     """
-    
+
+    # --- Load account and positions if account_id is given ---
+    existing_positions = {}
+    existing_cash = None
+
+    if account_id:
+        acct_row = persist.open_account(account_id)  # marks account as opened
+        existing_cash = float(acct_row["cash"])
+
+        pos_df = persist.load_positions(account_id)
+        if not pos_df.empty:
+            for _, row in pos_df.iterrows():
+                existing_positions[row["symbol"]] = PositionRecord(
+                    timestamp=row["timestamp"],
+                    symbol=row["symbol"],
+                    shares=int(row["quantity"]),
+                    avg_price=float(row["avg_price"]),
+                    market_price=float(row["current_price"]),
+                    realized_pnl=float(row["realized_pnl"]),
+                    unrealized_pnl=float(row["unrealized_pnl"]),
+                )
+
+    # --- Initialize portfolio state ---
+    init_cash = float(existing_cash if existing_cash is not None else starting_capital)
+    # If multiple positions, aggregate shares only for the candle_source symbol
+    symbol = getattr(candle_source, "symbol", None)
+    if symbol in existing_positions:
+        init_shares = int(existing_positions[symbol].shares)
+    else:
+        init_shares = 0
+
     state = PortfolioState(
-        cash=float(starting_capital),
-        shares=0,
+        cash=init_cash,
+        shares=init_shares,
         stop_loss=float("nan"),
-        prev_equity=float(starting_capital),
+        prev_equity=init_cash,
     )
+
     trade_records: list[TradeRecord] = []
     position_records: list[PositionRecord] = []
-    live_candles = pd.DataFrame()   # rolling history
+    live_candles = pd.DataFrame()
+    bootstrapped_position = False
+
+    def _seed_existing_position_snapshot(candle_row: pd.Series, symbol: str):
+        nonlocal bootstrapped_position, position_records, state
+        if bootstrapped_position or symbol not in existing_positions:
+            return
+
+        existing_position = existing_positions[symbol]
+        close = float(candle_row.get("close", float("nan")))
+        qty = existing_position.shares
+        avg_price = existing_position.avg_price
+
+        unrealized_pnl = (close - avg_price) * qty if qty else 0.0
+
+        pos0 = PositionRecord(
+            timestamp=candle_row.name,
+            symbol=symbol,
+            shares=qty,
+            avg_price=avg_price,
+            market_price=close,
+            realized_pnl=existing_position.realized_pnl,
+            unrealized_pnl=unrealized_pnl,
+        )
+        position_records.append(pos0)
+        state.prev_equity = state.cash + unrealized_pnl
+
+        if session_id:
+            persist.update_position(
+                account_id=account_id,
+                symbol=pos0.symbol,
+                quantity=pos0.shares,
+                avg_price=pos0.avg_price,
+                current_price=pos0.market_price,
+                pl=pos0.realized_pnl + pos0.unrealized_pnl,
+            )
+            persist.update_account(account_id=account_id, cash=state.cash)
+
+        bootstrapped_position = True
 
     def on_new_candle(candle_row: pd.Series, symbol: str = None):
         nonlocal state, trade_records, position_records, live_candles
 
-        # append new candle to rolling history
-        live_candles = pd.concat([live_candles, candle_row.to_frame().T]) 
-        live_candles = live_candles.tail(history_window)
+        # --- Only process if symbol matches existing positions or candle_source symbol ---
+        if symbol not in existing_positions and symbol != getattr(candle_source, "symbol", None):
+            return
 
-        # compute signals
+        live_candles = pd.concat([live_candles, candle_row.to_frame().T]).tail(history_window)
+
+        _seed_existing_position_snapshot(candle_row, symbol)
+
         signals_df = ste.evaluate_strategy(buy_logic, sell_logic, live_candles)
         if stop_loss_func:
             signals_df = stop_loss_func(signals_df)
-        latest_signals = signals_df.iloc[-1].to_dict()
+        latest_signals = signals_df.iloc[-1].to_dict() if not signals_df.empty else {}
 
-        # step strategy
         state, rec = strategy_step(
             data_row=candle_row,
             state=state,
-            signals_row=latest_signals,  
+            signals_row=latest_signals,
             position_sizer_func=position_sizer_func,
             position_sizer_param=position_sizer_param,
             allow_short=allow_short,
@@ -254,9 +326,9 @@ def run_live_strategy(
             lot_size=lot_size,
         )
 
-        trade_records.append(rec)
+        if rec is not None:
+            trade_records.append(rec)
 
-        # --- Build PositionRecord snapshot using candle_source symbol ---
         pos = update_position_record(position_records, rec, state, candle_row, symbol)
         position_records.append(pos)
 
@@ -267,25 +339,22 @@ def run_live_strategy(
                 quantity=pos.shares,
                 avg_price=pos.avg_price,
                 current_price=pos.market_price,
-                pl=pos.realized_pnl + pos.unrealized_pnl
+                pl=pos.realized_pnl + pos.unrealized_pnl,
             )
             persist.update_account(account_id=account_id, cash=state.cash)
 
-        if ui_callback:
+        if ui_callback and rec is not None:
             df = pd.DataFrame([rec.__dict__], index=[candle_row.name])
             ui_callback(df)
 
-    # subscribe to stream, passing symbol along
-    candle_source.subscribe(lambda row: on_new_candle(row, candle_source.symbol))
+    candle_source.subscribe(lambda row: on_new_candle(row, getattr(candle_source, "symbol", None)))
 
-
-    # return all records when session ends (caller decides when to stop)
     def finalize():
         trades_df = pd.DataFrame([r.__dict__ for r in trade_records])
-
         if session_id:
-            persist.insert_trade_stream(session_id, trades_df)
-            if position_records:  # only if we have positions
+            if not trades_df.empty:
+                persist.insert_trade_stream(session_id, trades_df)
+            if position_records:
                 pos = position_records[-1]
                 persist.update_position(
                     account_id=account_id,
@@ -293,10 +362,9 @@ def run_live_strategy(
                     quantity=pos.shares,
                     avg_price=pos.avg_price,
                     current_price=pos.market_price,
-                    pl=pos.realized_pnl + pos.unrealized_pnl
+                    pl=pos.realized_pnl + pos.unrealized_pnl,
                 )
                 persist.update_account(account_id=account_id, cash=state.cash)
-
         return trades_df
 
     return finalize
