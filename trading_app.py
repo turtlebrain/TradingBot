@@ -603,11 +603,14 @@ class TradingStrategyFrame(ttk.Frame):
             positions = persist.load_positions(acc_id)
             pnl_value = positions["pl"].sum()
             cash_value = persist.load_accounts().loc[acc_id, "cash"]
+            equity = sum(pos.quantity * pos.avg_price for pos in positions.itertuples(index=False))
         else:
             pnl_value = 0
             cash_value = self.cash_var.get()
+            equity = 0
+
         
-        final_equity = cash_value + pnl_value
+        final_equity = cash_value + equity
 
         # Update label
         self.pnl_var.set(f"${cash_value:,.2f} Cash")

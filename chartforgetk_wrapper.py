@@ -9,6 +9,7 @@ class CandlestickChartNoLabels(CandlestickChart):
         super().__init__(*args, **kwargs)
         self.show_labels = show_labels
         self.grid(row=0, column=0, sticky="nsew")
+        self.watchdog_id = None
 
     def plot(self, data: List[Tuple[float, float, float, float, float]], title: str = "Candlestick Chart", animation_flag: bool = False):
         """Plot an improved candlestick chart with (index, open, high, low, close) data"""
