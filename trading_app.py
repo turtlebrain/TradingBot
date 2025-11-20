@@ -29,7 +29,7 @@ class TradingBotApp:
     def __init__(self, root):
         self.root = root
         self.root.title("TradingBot")
-        self.root.geometry("1440x810")
+        self.root.geometry("1440x900")
         self.system_running = False
 
         # Initialize database
@@ -188,31 +188,34 @@ class AuthFrame(ttk.Frame):
         while True:
             with self.lock:
                 if self.expiry_time:
-                    # Refresh 2 minutes before expiry
-                    time_to_wait = max(0,(self.expiry_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() - 120)
+                    time_to_wait = max(0, (self.expiry_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() - 120)
                 else:
-                    time_to_wait = 60 # Default wait time if expiry unknown
-            
+                    time_to_wait = 60
+
             time.sleep(time_to_wait)
             try:
                 refresh_token_data = qt_api.refresh_access_token(self.refresh_token)
                 self.api_server = refresh_token_data.get('api_server', '')   
-                self.access_token = refresh_token_data.get('access_token', '')
-                self.refresh_token = refresh_token_data.get('refresh_token', '')  
-                streamer = self.controller.frames[TradingStrategyFrame].chart_frame.streamer 
-                if streamer:
-                    streamer.access_token = self.access_token
-                    streamer.api_server = self.api_server
-                    streamer.reconnect()
-                    print("Access token refreshed successfully")
+                self.access_token = refresh_token_data.get('access_token', '') 
+                self.refresh_token = refresh_token_data.get('refresh_token', '')   
+
+                # Schedule UI-safe update
+                self.after(0, self._update_streamer)
 
                 self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
                     seconds=refresh_token_data.get("expires_in", 0)
                 )
-                
             except Exception as e:
                 print("Failed to refresh token:", e)
                 time.sleep(30)
+
+    def _update_streamer(self):
+        streamer = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_chart().streamer
+        if streamer:
+            streamer.access_token = self.access_token
+            streamer.api_server = self.api_server
+            streamer.reconnect()
+            print("Access token refreshed successfully")
 
 
 class AccountManagerFrame(ttk.Frame):
@@ -261,13 +264,30 @@ class AccountManagerFrame(ttk.Frame):
                 widget.bind("<Button-1>", lambda e, n = account_id: self.open_account(n))
             
     def on_open_trading_view(self, meta):
-        self.controller.frames[TradingStrategyFrame].set_active_account(meta)     
-        self.controller.frames[TradingStrategyFrame].chart_frame.candle_chart.clear()
-        self.controller.frames[TradingStrategyFrame].render_positions_table()
-        self.controller.frames[BackTestingResultsFrame].results_chart.chart.clear()
-        self.controller.frames[BackTestingResultsFrame].clear_backtest_display()
-        self.controller.frames[BackTestingResultsFrame].render_trade_history()
+        """
+        Open the trading view for the given account metadata.
+        Sets the active account, refreshes account info, clears charts,
+        and reloads positions/backtest data.
+        """
+        trading_frame = self.controller.frames[TradingStrategyFrame]
+        backtest_frame = self.controller.frames[BackTestingResultsFrame]
+
+        # Activate account and refresh account info
+        trading_frame.set_active_account(meta)
+        trading_frame.update_account_info()
+
+        # Clear charts via TabbedWorkspaceFrame and refresh positions
+        trading_frame.top_tabs.clear_all_charts()
+        trading_frame.render_positions_table()
+
+        # Reset backtesting results
+        backtest_frame.results_chart.chart.clear()
+        backtest_frame.clear_backtest_display()
+        backtest_frame.render_trade_history()
+
+        # Show trading frame
         self.controller.show_main_frame(TradingStrategyFrame, "trading")
+
         
     def create_account(self):
         dialog = AccountDialog(self)
@@ -330,66 +350,299 @@ class AccountDialog:
             return
         self.result = (name, capital)
         self.top.destroy()
-    
+
+
+class TabbedWorkspaceFrame(ttk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+
+        # Workspace area (row 0)
+        self.workspace_area = ttk.Frame(self)
+        self.workspace_area.grid(row=0, column=0, sticky="nsew")
+        self.workspace_area.grid_rowconfigure(0, weight=1)
+        self.workspace_area.grid_columnconfigure(0, weight=1)
+
+        # Tab bar (row 1)
+        self.tab_bar = ttk.Frame(self)
+        self.tab_bar.grid(row=1, column=0, sticky="ew", pady=4)
+
+        self.rowconfigure(0, weight=1)
+        self.rowconfigure(1, weight=0)
+        self.columnconfigure(0, weight=1)
+
+        # Store tuples: (workspace_frame, tab_widget, chart_frame, general_tab, strategy_tab, execution_tab)
+        self.workspaces = []
+        self.active_workspace = None
+
+        self.add_workspace_tab()
+
+    def add_workspace_tab(self):
+        idx = len(self.workspaces) + 1
+        label = f"🗂{idx}"
+        closable = idx > 1
+
+        workspace = ttk.Frame(self.workspace_area)
+        workspace.grid(row=0, column=0, sticky="nsew")
+        workspace.columnconfigure(0, weight=0)
+        workspace.columnconfigure(1, weight=1)
+        workspace.rowconfigure(0, weight=1)
+
+        # Sidebar Notebook
+        notebook = ttk.Notebook(workspace, style="TNotebook")
+        notebook.grid(row=0, column=0, sticky="ns")
+
+        general_tab = GeneralInfoCollapsibleFrame(notebook, self.controller)
+        strategy_tab = StrategyCollapsibleFrame(notebook)
+        execution_tab = ExecutionCollasibleFrame(notebook)
+
+        notebook.add(general_tab, text="General")
+        notebook.add(strategy_tab, text="Strategy")
+        notebook.add(execution_tab, text="Execution")
+
+        # Chart
+        chart = CandlestickChartFrame(workspace, self.controller)
+        chart.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+
+        tab_widget = self._create_tab_widget(label, closable)
+        self.workspaces.append((workspace, tab_widget, chart, general_tab, strategy_tab, execution_tab))
+
+        self.select_workspace(tab_widget)
+        self._refresh_plus_button()
+
+
+
+    def _create_tab_widget(self, title, closable=True):
+        tab = ttk.Frame(self.tab_bar)
+        tab.pack(side="left", padx=2, pady=2)
+
+        lbl = ttk.Label(tab, text=title, width=6, anchor="center")
+        lbl.pack(side="left")
+        lbl.bind("<Button-1>", lambda e, t=tab: self.select_workspace(t))
+
+        if closable:
+            btn = ttk.Button(tab, text="✖", width=2, bootstyle=DANGER,
+                             command=lambda t=tab: self.close_workspace(t))
+            btn.pack(side="right")
+
+        return tab
+
+    def _refresh_plus_button(self):
+        for child in self.tab_bar.winfo_children():
+            if getattr(child, "is_plus", False):
+                child.destroy()
+
+        plus = ttk.Button(self.tab_bar, text="➕", width=2, bootstyle=SUCCESS,
+                          command=self.add_workspace_tab)
+        plus.is_plus = True
+        plus.pack(side="left", padx=2)
+
+    def select_workspace(self, tab_widget):
+        """
+        Raise the selected workspace and mark it active.
+        """
+        for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
+            if tab is tab_widget:
+                workspace.tkraise()
+                self.active_workspace = workspace
+                tab.configure(style="Selected.TFrame")
+            else:
+                tab.configure(style="TFrame")
+
+    def close_workspace(self, tab_widget):
+        if len(self.workspaces) <= 1:
+            print("At least one workspace must remain.")
+            return
+
+        for i, (workspace, tab, chart, general_tab, strategy_tab, execution_tab) in enumerate(self.workspaces):
+            if tab is tab_widget:
+                # Ask chart to clean up first
+                chart.shutdown()
+
+                # Now destroy UI
+                workspace.destroy()
+                tab.destroy()
+                del self.workspaces[i]
+                break
+
+        if self.workspaces:
+            self.select_workspace(self.workspaces[-1][1])
+            
+   # --- Helpers for active workspace ---
+    def get_active_chart(self):
+        for workspace, tab, chart, *_ in self.workspaces:
+            if workspace is self.active_workspace:
+                return chart
+        return None
+
+    def get_active_general_tab(self):
+        for workspace, tab, chart, general_tab, *_ in self.workspaces:
+            if workspace is self.active_workspace:
+                return general_tab
+        return None
+
+    def get_active_strategy_tab(self):
+        for workspace, tab, chart, _, strategy_tab, _ in self.workspaces:
+            if workspace is self.active_workspace:
+                return strategy_tab
+        return None
+
+    def get_active_execution_tab(self):
+        for workspace, tab, chart, _, _, execution_tab in self.workspaces:
+            if workspace is self.active_workspace:
+                return execution_tab
+        return None
+
+    def clear_active_chart(self):
+        """Clear the chart in the currently active workspace."""
+        if not self.active_workspace:
+            return
+        for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
+            if workspace is self.active_workspace:
+                chart.candle_chart.clear()
+                break
+            
+            
+    def clear_all_charts(self):
+        """Clear charts in all workspaces."""
+        for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
+            chart.candle_chart.clear()
+
+ 
 class TradingStrategyFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         self.active_account = None
-        
-        # --- Sidebar + main content container ---
-        # Use grid for the whole TradingStrategyFrame
-        self.columnconfigure(0, weight=0)  # sidebar fixed width
-        self.columnconfigure(1, weight=1)  # main content expands
-        self.rowconfigure(0, weight=1)
 
-        # Notebook in column 0
-        notebook = ttk.Notebook(self, style="TNotebook")
-        notebook.grid(row=0, column=0, sticky="ns")  # fill vertically
-        
-        # Create Tabs
-        self.general_tab = self.controller.create_tab(notebook, "General", 
-                                   lambda parent: GeneralInfoCollapsibleFrame(parent, self.controller))
-        self.strategy_tab = self.controller.create_tab(notebook, "Strategy", 
-                                   lambda parent: StrategyCollapsibleFrame(parent))
-        self.execution_tab = self.controller.create_tab(notebook, "Execution", ExecutionCollasibleFrame)
+        # --- Cash variable (defaults to 10,000) ---
+        self.cash_var = tk.DoubleVar(value=10000.0)
 
-        # --- Right-hand content area ---
-        right_frame = ttk.Frame(self)
-        right_frame.grid(row=0, column=1, sticky="nsew")
-        right_frame.columnconfigure(0, weight=1)
-        right_frame.columnconfigure(1, weight=1)
-        right_frame.rowconfigure(0, weight=1)  # chart expands
+        # Shared grid: 2 columns across the whole frame
+        self.columnconfigure(0, weight=0)
+        self.columnconfigure(1, weight=1)
+        self.rowconfigure(0, weight=3)
+        self.rowconfigure(1, weight=1)
 
-        # Chart
-        self.chart_frame = CandlestickChartFrame(right_frame, controller)
-        self.chart_frame.grid(row=0, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+        # --- Top row: tabbed workspaces ---
+        self.top_tabs = TabbedWorkspaceFrame(self, controller)
+        self.top_tabs.grid(row=0, column=0, columnspan=2, sticky="nsew")
 
-        # Positions Table
-        cols = ("Symbol", "Quantity", "Avg Price", "Current Price", "P/L")  
-        self.positions_table = ttk.Treeview(right_frame, columns = cols, show="headings", height = 8)
+        # --- Bottom row: account info + positions ---
+        account_group = ttkb.LabelFrame(self, text="Account Info", bootstyle="info")
+        account_group.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+
+        # Label bound to cash_var
+        self.pnl_var = tk.StringVar(value=f"${self.cash_var.get():,.2f} Cash")
+        pnl_label = ttk.Label(
+            account_group,
+            textvariable=self.pnl_var,
+            bootstyle="info",
+            font=("Helvetica", 16, "bold")
+        )
+        pnl_label.pack(pady=(10, 5))
+
+        # Meter (values updated in update_account_info)
+        self.pnl_meter = ttkb.Meter(
+            master=account_group,
+            metersize=200,
+            amountused=0,
+            amounttotal=1,
+            metertype="semi",
+            bootstyle="secondary",
+            subtext="N/A"
+        )
+        self.pnl_meter.pack(pady=10)
+
+        # Positions container (unchanged)
+        positions_container = ttk.Frame(self)
+        positions_container.grid(row=1, column=1, sticky="nsew", padx=5, pady=5)
+        positions_container.columnconfigure(0, weight=1)
+        positions_container.rowconfigure(0, weight=1)
+        positions_container.rowconfigure(1, weight=0)
+
+        table_frame = ttk.Frame(positions_container)
+        table_frame.grid(row=0, column=0, sticky="nsew")
+        table_frame.columnconfigure(0, weight=1)
+        table_frame.rowconfigure(0, weight=1)
+
+        cols = ("Symbol", "Quantity", "Avg Price", "Current Price", "P/L")
+        self.positions_table = ttk.Treeview(
+            table_frame, columns=cols, show="headings", height=8
+        )
         for col in cols:
-            self.positions_table.heading(col, text = col)
+            self.positions_table.heading(col, text=col)
             self.positions_table.column(col, anchor="center", width=100)
-        self.positions_table.grid(row=1, column=0, columnspan=2, padx=5, pady=5, sticky="nsew") 
+        self.positions_table.grid(row=0, column=0, sticky="nsew")
 
-        self.scrollbar = ttk.Scrollbar(right_frame, command=self.positions_table.yview)
-        self.scrollbar.grid(row=1, column=2, sticky='ns')
-        self.positions_table['yscrollcommand'] = self.scrollbar.set
+        self.scrollbar = ttk.Scrollbar(table_frame, command=self.positions_table.yview)
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
+        self.positions_table["yscrollcommand"] = self.scrollbar.set
 
-        # Run strategy button    
-        self.run_strategy_button = ttk.Button(right_frame, width=50, text="Run Strategy", command=self.run_strategy)
-        self.run_strategy_button.grid(row=2, column=0, columnspan=2, padx=2, pady=2)
+        self.run_strategy_button = ttkb.Button(
+            self, width=50, text="Run Strategy",
+            command=self.run_strategy, bootstyle="primary"
+        )
+        self.run_strategy_button.grid(row=2, column=0, columnspan=2, padx=2, pady=5)
+
+        # Initialize account info
+        self.update_account_info()
+
+
+    def update_account_info(self):
+        """
+        Refresh Account Info panel:
+        - Label shows cash_var
+        - Meter shows P&L relative to equity
+        """
+        active_acc = self.active_account
+
+        # Load positions if account is active
+        if active_acc is not None:
+            acc_id = int(active_acc.name)
+            positions = persist.load_positions(acc_id)
+            pnl_value = positions["pl"].sum()
+            cash_value = persist.load_accounts().loc[acc_id, "cash"]
+            equity = sum(pos.quantity * pos.avg_price for pos in positions.itertuples(index=False))
+        else:
+            pnl_value = 0
+            cash_value = self.cash_var.get()
+            equity = 0
+
+        
+        final_equity = cash_value + equity
+
+        # Update label
+        self.pnl_var.set(f"${cash_value:,.2f} Cash")
+
+        # Update meter
+        amountused = abs(pnl_value)
+        amounttotal = abs(final_equity) if final_equity != 0 else 1
+
+        self.pnl_meter.configure(
+            amountused=min(amountused, amounttotal),
+            amounttotal=amounttotal,
+            bootstyle="success" if pnl_value >= 0 else "danger",
+            subtext="Profit" if pnl_value >= 0 else (
+                "Loss" if amountused <= amounttotal else "Overdrawn"
+            )
+        )
     
     def set_active_account(self, account_meta):
-        if not account_meta.empty:
+        """
+        Set the active account. If valid, update cash_var from metadata.
+        Otherwise, default to 10,000.
+        """
+        if account_meta is not None and not account_meta.empty:
             self.active_account = account_meta
-            self.execution_tab.cash_var.set(account_meta["cash"])
-            self.execution_tab.cash_entry.state(["disabled"])
-        elif not self.active_account:
-            self.execution_tab.cash_entry.state(["!disabled"])
-        
-    
+            self.cash_var.set(float(account_meta.get("cash", 10000)))
+        else:
+            self.active_account = None
+            self.cash_var.set(10000.0)
+
+        # Refresh account info panel
+        self.update_account_info()
+         
     def render_positions_table(self):
         """
         Render the positions DataFrame into the given ttk.Treeview.
@@ -425,9 +678,9 @@ class TradingStrategyFrame(ttk.Frame):
 
                      
     def search(self, show_output=True):  
-        stock_symbol = self.general_tab.stock_input.get().strip() 
-        start_date = self.general_tab.start_date_input.get_date().isoformat()
-        end_date = self.general_tab.end_date_input.get_date().isoformat()
+        stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip() 
+        start_date = self.top_tabs.get_active_general_tab().start_date_input.get_date().isoformat()
+        end_date = self.top_tabs.get_active_general_tab().end_date_input.get_date().isoformat()
         if not stock_symbol or not start_date or not end_date:
             messagebox.showwarning("Input Error", "Please enter a valid stock symbol as query.")
             return
@@ -443,19 +696,19 @@ class TradingStrategyFrame(ttk.Frame):
                 print("No data found for:", stock_symbol)
                 return
             symbol_id = symbol_data[0]['symbolId']
-            chart_frame = self.chart_frame
+            active_chart = self.top_tabs.get_active_chart()
             candle_data = qt_api.get_candles_paginated(
                 access_token=my_access_token, 
                 api_server=my_api_server, 
                 symbol_id=symbol_id, 
-                start_date=self.general_tab.start_date_input.get_date(), 
-                end_date=self.general_tab.end_date_input.get_date(),
-                interval= chart_frame.time_interval
+                start_date=self.top_tabs.get_active_general_tab().start_date_input.get_date(), 
+                end_date=self.top_tabs.get_active_general_tab().end_date_input.get_date(),
+                interval= active_chart.time_interval
             )
             candle_data_pd = pd.DataFrame(candle_data)
             if show_output:
                 # Plot candlestick chart
-                chart_frame.update_chart(candle_data_pd)
+                active_chart.update_chart(candle_data_pd)
             return candle_data
         except requests.exceptions.HTTPError as err:
             messagebox.showerror("Error", f"HTTP error occurered {err}")           
@@ -471,7 +724,7 @@ class TradingStrategyFrame(ttk.Frame):
 
     
     def run_strategy(self):
-        if self.chart_frame.live_switch_var.get():
+        if self.top_tabs.get_active_chart().live_switch_var.get():
             # --- LIVE MODE ---
             if not hasattr(self, "_live_running") or not self._live_running:
                 acc_id = int(self.active_account.name)
@@ -493,20 +746,21 @@ class TradingStrategyFrame(ttk.Frame):
                     backtest_frame.results_chart.update_chart()
                     backtest_frame.render_trade_history()
                     self.render_positions_table()
+                    self.update_account_info()
 
                 self._finalize_live = engine.run_live_strategy(
-                    candle_source=self.chart_frame.candle_aggregator,
-                    buy_logic=self.strategy_tab.buy_section,
-                    sell_logic=self.strategy_tab.sell_section,
+                    candle_source=self.top_tabs.get_active_chart().candle_aggregator,
+                    buy_logic=self.top_tabs.get_active_strategy_tab().buy_section,
+                    sell_logic=self.top_tabs.get_active_strategy_tab().sell_section,
                     position_sizer_func=pos_sz.fixed_fraction_position_sizer,
-                    position_sizer_param=float(self.execution_tab.position_slider_value.get()),
-                    stop_loss_func=risk.StopLoss.average_true_range_stop if self.execution_tab.stop_loss_var.get() else None,
-                    starting_capital=float(self.execution_tab.cash_var.get()),
+                    position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
+                    stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
+                    starting_capital=float(self.cash_var.get()),
                     allow_short=False,
-                    slippage=float(self.execution_tab.slippage_input.get().strip()),
-                    fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
-                    fee_min=float(self.execution_tab.minimum_fee_input.get().strip()),
-                    lot_size=int(self.execution_tab.lot_size_input.get().strip()),
+                    slippage=float(self.top_tabs.get_active_execution_tab().slippage_input.get().strip()),
+                    fee_rate=float(self.top_tabs.get_active_execution_tab().fee_rate_input.get().strip()),
+                    fee_min=float(self.top_tabs.get_active_execution_tab().minimum_fee_input.get().strip()),
+                    lot_size=int(self.top_tabs.get_active_execution_tab().lot_size_input.get().strip()),
                     account_id = acc_id,
                     session_id=session_id,
                     ui_callback=_on_live_update,
@@ -527,8 +781,9 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.update_chart()
                 backtest_frame.render_trade_history()
                 last_cash = float(final_df["cash"].iloc[-1])
-                self.execution_tab.cash_var.set(last_cash)
+                self.cash_var.set(last_cash)
                 persist.update_account(account_id=acc_id, cash=last_cash)
+                self.update_account_info()
                 self._live_running = False
                 self.run_strategy_button.config(text="Run Strategy")
                 del self._finalize_live
@@ -540,17 +795,17 @@ class TradingStrategyFrame(ttk.Frame):
             candle_data = pd.DataFrame(self.search(show_output=False))
             backtest_results = engine.backtest_strategy(
                 data=candle_data,
-                buy_logic=self.strategy_tab.buy_section,
-                sell_logic=self.strategy_tab.sell_section,
+                buy_logic=self.top_tabs.get_active_strategy_tab().buy_section,
+                sell_logic=self.top_tabs.get_active_strategy_tab().sell_section,
                 position_sizer_func=pos_sz.fixed_fraction_position_sizer,
-                position_sizer_param=float(self.execution_tab.position_slider_value.get()),
-                stop_loss_func=risk.StopLoss.average_true_range_stop if self.execution_tab.stop_loss_var.get() else None,
-                starting_capital=float(self.execution_tab.cash_var.get()),
+                position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
+                stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
+                starting_capital=float(self.cash_var.get()),
                 allow_short=False,
-                slippage=float(self.execution_tab.slippage_input.get().strip()),
-                fee_rate=float(self.execution_tab.fee_rate_input.get().strip()),
-                fee_min=float(self.execution_tab.minimum_fee_input.get().strip()),
-                lot_size=int(self.execution_tab.lot_size_input.get().strip()),
+                slippage=float(self.top_tabs.get_active_execution_tab().slippage_input.get().strip()),
+                fee_rate=float(self.top_tabs.get_active_execution_tab().fee_rate_input.get().strip()),
+                fee_min=float(self.top_tabs.get_active_execution_tab().minimum_fee_input.get().strip()),
+                lot_size=int(self.top_tabs.get_active_execution_tab().lot_size_input.get().strip()),
                 session_id=session_id,
             )
             if not backtest_results.empty:
@@ -575,6 +830,7 @@ class CandlestickChartFrame(ttk.Frame):
             bootstyle="success-round-toggle"
         )
         self.live_switch.grid(row=0, column=0, sticky="nsew")
+        
         self.show_label_var = tk.BooleanVar(value=False)  # OFF by default
         self.show_label_toggle = ttk.Checkbutton(
             self, 
@@ -585,12 +841,22 @@ class CandlestickChartFrame(ttk.Frame):
             offvalue=False
         )
         self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
-        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 880, height = 495)
+        
+        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 800, height = 450)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
+        
         self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
         self.time_interval = "OneDay"
-        self.timeframe_control = self.create_segmented_control(self.timeframe_options, self.on_timeframe_change)
-        self.grid_columnconfigure(0, weight=1)
+        control_frame = ttk.Frame(self)
+        control_frame.grid(row=2, column=0, columnspan=4, sticky="ew")
+        control_frame.grid_rowconfigure(0, weight=0)
+        for i in range(len(self.timeframe_options)):
+            control_frame.grid_columnconfigure(i, weight=1)
+            self.grid_columnconfigure(i, weight=1)
+            
+        self.timeframe_buttons = self.create_segmented_control(
+            control_frame, self.timeframe_options, self.on_timeframe_change
+        )
         self.grid_rowconfigure(1, weight=1)
         
         self.tick_queue = None
@@ -607,7 +873,7 @@ class CandlestickChartFrame(ttk.Frame):
                 api_server = auth_frame.api_server,
                 tick_queue = self.tick_queue
             )
-            stock_symbol = self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip()
+            stock_symbol = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip()
             self.candle_aggregator = tick_processor.CandleAggregator(stock_symbol, "OneMinute")             
             symbol_data = qt_api.get_stock_data(
                 access_token=auth_frame.access_token,
@@ -615,7 +881,7 @@ class CandlestickChartFrame(ttk.Frame):
                 symbol_str=stock_symbol
             )
             symbol_id = symbol_data[0]['symbolId']
-            for rb in self.timeframe_control:
+            for rb in self.timeframe_buttons:
                 rb.config(state=tk.DISABLED)
             self.streamer.start_stream(symbol_id)
             self._poll_ticks()
@@ -624,11 +890,45 @@ class CandlestickChartFrame(ttk.Frame):
             if self.streamer:
                 self.streamer.stop_stream()
             if self._poll_job:
-                root.after_cancel(self._poll_job)
+                self.after_cancel(self._poll_job)
                 self._poll_job = None
+            if self._update_job:
+                self.after_cancel(self._update_job)
+                self._update_job = None
             self.tick_queue = None
-            for rb in self.timeframe_control:
+            for rb in self.timeframe_buttons:
                 rb.config(state=tk.NORMAL)
+    
+    def shutdown(self):
+        """Gracefully stop live streaming and background jobs."""
+        if self.live_switch_var.get():
+            # Turn off live mode first
+            try:
+                self.toggle_live_mode()  # or explicitly stop streamer/aggregator
+                print("Live mode disabled before closing chart.")
+            except Exception as e:
+                print(f"Error disabling live mode: {e}")
+
+        # Cancel any polling jobs
+        if self._poll_job is not None:
+            self.after_cancel(self._poll_job)
+            self._poll_job = None
+
+        # Close streamer/aggregator if they exist
+        if self.streamer is not None:
+            try:
+                self.streamer.stop_stream()
+            except Exception as e:
+                print(f"Error closing streamer: {e}")
+            self.streamer = None
+
+        if self.candle_aggregator is not None:
+            try:
+                self.candle_aggregator.clear_subscribers()
+            except Exception as e:
+                print(f"Error stopping aggregator: {e}")
+            self.candle_aggregator = None
+
     
     def _poll_ticks(self):
         try:
@@ -659,32 +959,37 @@ class CandlestickChartFrame(ttk.Frame):
     def update_chart(self, df, animate_last_only = False):
         self.candle_chart.clear()
         self.candle_chart.plot(self.convert_data_for_chart(df), 
-                               self.controller.frames[TradingStrategyFrame].general_tab.stock_input.get().strip(), animate_last_only)
+                               self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip(), animate_last_only)
         
     def periodically_update_chart(self):
         candles_df = self.candle_aggregator.get_candles()
         if not candles_df.empty and self.live_switch_var.get():
             self.update_chart(candles_df, True)
-        root.after(3000, self.periodically_update_chart)  # Update every 3 seconds     
+    
+        # reschedule only if live mode is still on
+        if self.live_switch_var.get():
+            self._update_job = self.after(3000, self.periodically_update_chart)
+        else:
+            self._update_job = None
                
-    def create_segmented_control(self, options, command = None):
-        self.sg_var = tk.StringVar(value=options[1])
-        self.sg_command = command
+    def create_segmented_control(self, parent, options, command=None):
+        sg_var = tk.StringVar(value=options[1])
         style = ttk.Style()
         style.configure("Segmented.TRadiobutton", indicatoron=0, relief="raised")
         style.map("Segmented.TRadiobutton", relief=[("selected", "sunken")])
+
         buttons = []
         for i, option in enumerate(options):
             rb = ttk.Radiobutton(
-                self,
+                parent,
                 text=option,
                 value=option,
-                variable=self.sg_var,
-                command=self._on_select,
+                variable=sg_var,
+                command=lambda opt=option: command(opt) if command else None,
                 style="Segmented.TRadiobutton"
             )
-            rb.grid(row=2,column=i, sticky="nsew")
-            self.columnconfigure(i, weight=1)
+            rb.grid(row=0, column=i, sticky="nsew", padx=2, pady=2)
+            parent.columnconfigure(i, weight=1)
             buttons.append(rb)
         return buttons
     
@@ -991,11 +1296,6 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
         super().__init__(parent, title="Execution")
-        self.cash_label = ttk.Label(self.content, text="Cash:")
-        self.cash_label.pack(anchor="w")
-        self.cash_var = tk.DoubleVar(value=10000.0)
-        self.cash_entry = ttk.Entry(self.content, textvariable=self.cash_var)
-        self.cash_entry.pack(fill="x", pady=2)
         self.slippage_label = ttk.Label(self.content, text="Slippage")
         self.slippage_label.pack(anchor="w")
         self.slippage_input = ttk.Entry(self.content)
@@ -1144,10 +1444,10 @@ class ResultSettingsCollapsibleFrame(CollapsibleFrame):
             result_summary['final_equity'] = round(results['equity'].iloc[-1], 2)
             result_summary['profits'] = round(result_summary['final_equity'] - initial_equity, 2)
             result_summary['returns'] = round((result_summary['profits'] / initial_equity) * 100, 2)
-            chart_frame = self.controller.frames[TradingStrategyFrame].chart_frame
-            time_frame = chart_frame.time_interval
-            if chart_frame.live_switch_var.get():
-                time_frame = chart_frame.candle_aggregator.time_interval
+            active_chart = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_chart()
+            time_frame = active_chart.time_interval
+            if active_chart.live_switch_var.get():
+                time_frame = active_chart.candle_aggregator.time_interval
             result_summary['sharpe_ratio'] = round(engine.compute_sharpe_ratio(returns = results['returns'], 
                                                                                timeframe = time_frame), 2)
         return result_summary
