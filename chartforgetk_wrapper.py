@@ -243,23 +243,23 @@ class CandlestickChartNoLabels(CandlestickChart):
         self.bind('<Enter>', lambda e: tooltip.withdraw())
         
         def watchdog_hide():
+            # Check if mouse is inside canvas
             x, y = self.winfo_pointerx(), self.winfo_pointery()
-            # Convert to canvas coords
-            cx = self.canvas.winfo_rootx()
-            cy = self.canvas.winfo_rooty()
-            cw = self.canvas.winfo_width()
-            ch = self.canvas.winfo_height()
-        
+            cx, cy = self.canvas.winfo_rootx(), self.canvas.winfo_rooty()
+            cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
+
             if not (cx <= x <= cx+cw and cy <= y <= cy+ch):
                 tooltip.withdraw()
                 if current_highlight:
                     self.canvas.delete(current_highlight)
-        
-            # Re‑schedule watchdog
-            self.canvas.after(200, watchdog_hide)
-        
-        # Start watchdog once
-        self.canvas.after(200, watchdog_hide)
+
+            # Reschedule watchdog
+            self.watchdog_id = self.canvas.after(200, watchdog_hide)
+
+        # Start watchdog once per chart
+        if not self.watchdog_id:
+            self.watchdog_id = self.canvas.after(200, watchdog_hide)
+
 
 
 

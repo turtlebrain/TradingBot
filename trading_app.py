@@ -188,31 +188,34 @@ class AuthFrame(ttk.Frame):
         while True:
             with self.lock:
                 if self.expiry_time:
-                    # Refresh 2 minutes before expiry
-                    time_to_wait = max(0,(self.expiry_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() - 120)
+                    time_to_wait = max(0, (self.expiry_time - datetime.datetime.now(datetime.timezone.utc)).total_seconds() - 120)
                 else:
-                    time_to_wait = 60 # Default wait time if expiry unknown
-            
+                    time_to_wait = 60
+
             time.sleep(time_to_wait)
             try:
                 refresh_token_data = qt_api.refresh_access_token(self.refresh_token)
                 self.api_server = refresh_token_data.get('api_server', '')   
-                self.access_token = refresh_token_data.get('access_token', '')
-                self.refresh_token = refresh_token_data.get('refresh_token', '')  
-                streamer = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_chart().streamer 
-                if streamer:
-                    streamer.access_token = self.access_token
-                    streamer.api_server = self.api_server
-                    streamer.reconnect()
-                    print("Access token refreshed successfully")
+                self.access_token = refresh_token_data.get('access_token', '') 
+                self.refresh_token = refresh_token_data.get('refresh_token', '')   
+
+                # Schedule UI-safe update
+                self.after(0, self._update_streamer, refresh_token_data)
 
                 self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
                     seconds=refresh_token_data.get("expires_in", 0)
                 )
-                
             except Exception as e:
                 print("Failed to refresh token:", e)
                 time.sleep(30)
+
+    def _update_streamer(self, refresh_token_data):
+        streamer = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_chart().streamer
+        if streamer:
+            streamer.access_token = self.access_token
+            streamer.api_server = self.api_server
+            streamer.reconnect()
+            print("Access token refreshed successfully")
 
 
 class AccountManagerFrame(ttk.Frame):
@@ -599,10 +602,11 @@ class TradingStrategyFrame(ttk.Frame):
             acc_id = int(active_acc.name)
             positions = persist.load_positions(acc_id)
             pnl_value = positions["pl"].sum()
+            cash_value = persist.load_accounts().loc[acc_id, "cash"]
         else:
             pnl_value = 0
-
-        cash_value = self.cash_var.get()
+            cash_value = self.cash_var.get()
+        
         final_equity = cash_value + pnl_value
 
         # Update label
@@ -775,8 +779,8 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.render_trade_history()
                 last_cash = float(final_df["cash"].iloc[-1])
                 self.cash_var.set(last_cash)
-                self.update_account_info()
                 persist.update_account(account_id=acc_id, cash=last_cash)
+                self.update_account_info()
                 self._live_running = False
                 self.run_strategy_button.config(text="Run Strategy")
                 del self._finalize_live

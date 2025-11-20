@@ -269,6 +269,7 @@ def run_live_strategy(
                 current_price=pos.market_price,
                 pl=pos.realized_pnl + pos.unrealized_pnl
             )
+            persist.update_account(account_id=account_id, cash=state.cash)
 
         if ui_callback:
             df = pd.DataFrame([rec.__dict__], index=[candle_row.name])
@@ -294,6 +295,7 @@ def run_live_strategy(
                     current_price=pos.market_price,
                     pl=pos.realized_pnl + pos.unrealized_pnl
                 )
+                persist.update_account(account_id=account_id, cash=state.cash)
 
         return trades_df
 
