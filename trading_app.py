@@ -1,7 +1,7 @@
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
-import api_requests as qt_api
+import questrade_api as qt_api
 import json
 import ttkbootstrap as ttkb
 from ttkbootstrap.widgets import DateEntry
@@ -130,7 +130,6 @@ class TradingBotApp:
         # Gracefully end trade live trading and finalize dataframe, and finally stop stream and persist sessions
         qt_api.log.end_session()
         self.root.quit()
-        self.root.destroy()
             
 class LoginFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -1459,5 +1458,4 @@ if __name__ == '__main__':
     root = tk.Tk()
     app = TradingBotApp(root)
     root.protocol("WM_DELETE_WINDOW", app.on_close)
-    root.mainloop()
-        
+    root.mainloop()       
