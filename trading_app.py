@@ -741,9 +741,10 @@ class TradingStrategyFrame(ttk.Frame):
                         backtest_frame.backtest_results = pd.concat(
                             [backtest_frame.backtest_results, trade_df]
                         )
-                    backtest_frame.results_chart.results = backtest_frame.backtest_results
-                    backtest_frame.results_chart.update_chart()
-                    backtest_frame.render_trade_history()
+                    # uncomment to update backtest frame live (may slow down UI)
+                    # backtest_frame.results_chart.results = backtest_frame.backtest_results
+                    # backtest_frame.results_chart.update_chart()
+                    # backtest_frame.render_trade_history()
                     self.render_positions_table()
                     self.update_account_info()
 
