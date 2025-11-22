@@ -596,25 +596,32 @@ class TradingStrategyFrame(ttk.Frame):
         """
         active_acc = self.active_account
 
-        # Load positions if account is active
         if active_acc is not None:
             acc_id = int(active_acc.name)
-            positions = persist.load_positions(acc_id)
-            pnl_value = positions["pl"].sum()
-            cash_value = persist.load_accounts().loc[acc_id, "cash"]
-            equity = sum(pos.quantity * pos.avg_price for pos in positions.itertuples(index=False))
+
+            # Load account and positions
+            accounts_df = persist.load_accounts()
+            acc_row = accounts_df.loc[acc_id]
+            cash_value = float(acc_row["cash"])
+            realized_pnl = float(acc_row.get("realized_pnl", 0.0))
+
+            positions_df = persist.load_positions(acc_id)
+            unrealized_pnl_total = positions_df["unrealized_pnl"].sum() if not positions_df.empty else 0.0
+
+            # Total P&L = realized + unrealized
+            pnl_value = realized_pnl + unrealized_pnl_total
+
+            # Equity = cash + realized P&L + unrealized P&L
+            final_equity = cash_value + pnl_value
         else:
-            pnl_value = 0
-            cash_value = self.cash_var.get()
-            equity = 0
+            pnl_value = 0.0
+            cash_value = float(self.cash_var.get())
+            final_equity = cash_value
 
-        
-        final_equity = cash_value + equity
-
-        # Update label
+        # --- Update label ---
         self.pnl_var.set(f"${cash_value:,.2f} Cash")
 
-        # Update meter
+        # --- Update meter ---
         amountused = abs(pnl_value)
         amounttotal = abs(final_equity) if final_equity != 0 else 1
 
@@ -671,7 +678,7 @@ class TradingStrategyFrame(ttk.Frame):
                     int(row["quantity"]),
                     f"{row['avg_price']:.2f}",
                     f"{row['current_price']:.2f}",
-                    f"{row['pl']:.2f}"
+                    f"{row['unrealized_pnl']:.2f}"
                 )
             )
 
@@ -780,9 +787,21 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.results = final_df
                 backtest_frame.results_chart.update_chart()
                 backtest_frame.render_trade_history()
+
+                # Update cash and realized P&L from final_df
                 last_cash = float(final_df["cash"].iloc[-1])
                 self.cash_var.set(last_cash)
-                persist.update_account(account_id=acc_id, cash=last_cash)
+
+                # realized_pnl column is tracked in account state
+                last_realized = float(final_df["pnl"].cumsum().iloc[-1]) if "pnl" in final_df.columns else 0.0
+
+                persist.update_account(
+                    account_id=acc_id,
+                    cash=last_cash,
+                    realized_pnl=last_realized,
+                    equity=last_cash + last_realized
+                )
+
                 self.update_account_info()
                 self._live_running = False
                 self.run_strategy_button.config(text="Run Strategy")

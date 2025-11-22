@@ -15,26 +15,29 @@ def init_db():
         # Accounts
         cur.execute("""
         CREATE TABLE IF NOT EXISTS accounts (
-            account_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-            name         TEXT NOT NULL,
-            date_created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_opened  TIMESTAMP,
-            cash      REAL NOT NULL
+            account_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            name          TEXT NOT NULL,
+            date_created  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_opened   TIMESTAMP,
+            cash          REAL NOT NULL,
+            realized_pnl  REAL DEFAULT 0.0,
+            equity        REAL DEFAULT 0.0
         )
         """)
 
         # Positions
         cur.execute("""
         CREATE TABLE IF NOT EXISTS positions (
-            position_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-            account_id    INTEGER NOT NULL,
-            symbol        TEXT NOT NULL,
-            quantity      REAL NOT NULL,
-            avg_price     REAL NOT NULL,
-            current_price REAL,
-            pl            REAL,
-            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(account_id) REFERENCES accounts(account_id)
+            position_id    INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id     INTEGER NOT NULL,
+            symbol         TEXT NOT NULL,
+            quantity       REAL NOT NULL,
+            avg_price      REAL NOT NULL,
+            current_price  REAL,
+            unrealized_pnl REAL DEFAULT 0.0,
+            side           TEXT,
+            created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(account_id) REFERENCES accounts(account_id),
             UNIQUE(account_id, symbol)  -- enforce one row per symbol per account
         )
         """)
@@ -50,7 +53,6 @@ def init_db():
             FOREIGN KEY(account_id) REFERENCES accounts(account_id)
         )
         """)
-
 
         # Trade streams (all rows of a run)
         cur.execute("""
@@ -84,14 +86,14 @@ def insert_account(name, cash):
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO accounts (name, cash, last_opened) VALUES (?, ?, CURRENT_TIMESTAMP)",
-            (name, cash)
+            "INSERT INTO accounts (name, cash, last_opened, realized_pnl, equity) VALUES (?, ?, CURRENT_TIMESTAMP, 0.0, ?)",
+            (name, cash, cash)
         )
         conn.commit()
         return cur.lastrowid  # new account_id
 
 def update_account(account_id, **kwargs):
-    """Update arbitrary fields on an account (e.g. last_opened, cash)."""
+    """Update arbitrary fields on an account (e.g. last_opened, cash, realized_pnl, equity)."""
     if not kwargs:
         return
     with get_connection() as conn:
@@ -121,9 +123,9 @@ def delete_account(account_id):
         cur = conn.cursor()
         cur.execute("DELETE FROM accounts WHERE account_id = ?", (account_id,))
         conn.commit()
-    return load_accounts()     
-  
-# --- Trading file i/o --- 
+    return load_accounts()
+
+# --- Trading file i/o ---
 def start_trade_session(account_id, stream_type="live"):
     with get_connection() as conn:
         cur = conn.cursor()
@@ -134,7 +136,6 @@ def start_trade_session(account_id, stream_type="live"):
         conn.commit()
         return cur.lastrowid
 
-
 def end_trade_session(session_id):
     with get_connection() as conn:
         cur = conn.cursor()
@@ -142,10 +143,7 @@ def end_trade_session(session_id):
         conn.commit()
 
 def insert_trade_stream(session_id, df_stream):
-    """
-    Persist an entire DataFrame of trade stream rows for a session.
-    df_stream must have columns matching col_headers.
-    """
+    """Persist an entire DataFrame of trade stream rows for a session."""
     with get_connection() as conn:
         df_stream.assign(session_id=session_id).to_sql(
             "trade_streams", conn, if_exists="append", index=False
@@ -164,31 +162,30 @@ def load_trade_stream(session_id):
                            conn, params=(session_id,), index_col="row_id")
 
 # --- Positions file i/o ---
-def update_position(account_id, symbol, quantity, avg_price, current_price=None, pl=None):
+def update_position(account_id, symbol, quantity, avg_price, current_price=None, unrealized_pnl=None, side=None):
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO positions (account_id, symbol, quantity, avg_price, current_price, pl)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO positions (account_id, symbol, quantity, avg_price, current_price, unrealized_pnl, side)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_id, symbol) DO UPDATE SET
                 quantity = excluded.quantity,
                 avg_price = excluded.avg_price,
                 current_price = excluded.current_price,
-                pl = excluded.pl
-        """, (account_id, symbol, quantity, avg_price, current_price, pl))
+                unrealized_pnl = excluded.unrealized_pnl,
+                side = excluded.side
+        """, (account_id, symbol, quantity, avg_price, current_price, unrealized_pnl, side))
         conn.commit()
         return cur.lastrowid
-
 
 def load_positions(account_id=None):
     with get_connection() as conn:
         if account_id:
             return pd.read_sql(
-                "SELECT * FROM positions WHERE account_id = ?",
-                conn, params=(account_id,), index_col="position_id"
+                "SELECT * FROM positions WHERE account_id = ?", conn,
+                params=(account_id,), index_col="position_id"
             )
         return pd.read_sql("SELECT * FROM positions", conn, index_col="position_id")
-
 
 # --- Bootstrap ---
 def bootstrap_state():
