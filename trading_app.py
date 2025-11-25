@@ -1,7 +1,7 @@
 import webbrowser
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
-import questrade_api as qt_api
+from Brokers.broker_factory import get_broker
 import json
 import ttkbootstrap as ttkb
 from ttkbootstrap.widgets import DateEntry
@@ -32,6 +32,9 @@ class TradingBotApp:
         self.root.geometry("1440x900")
         self.system_running = False
 
+        # Load broker
+        self.broker = get_broker("questrade")   
+        
         # Initialize database
         persist.init_db()
         
@@ -128,7 +131,7 @@ class TradingBotApp:
     def on_close(self):
         self.running = False
         # Gracefully end trade live trading and finalize dataframe, and finally stop stream and persist sessions
-        qt_api.log.end_session()
+        self.broker.log.end_session()
         self.root.quit()
             
 class LoginFrame(ttk.Frame):
@@ -138,15 +141,25 @@ class LoginFrame(ttk.Frame):
         self.login_button = ttk.Button(self, width=50, text="Log in", command=self.login)
         self.login_button.place(relx=0.5, rely=0.5, anchor="center")
         self.pack_propagate(False)
-    
+
     def login(self):
-        auth_url = qt_api.build_auth_url()
-        try:
-            webbrowser.open(auth_url)
-        except:
-            pass
-        messagebox.showinfo("Login", f"After logging in, you'll be redirected to: {qt_api.REDIRECT_URI}?code=YOUR_CODE_HERE")
-        self.controller.show_frame(AuthFrame)
+        # Use the broker abstraction
+        auth_info = self.controller.broker.authenticate()
+        auth_url = auth_info.get("auth_url")
+
+        if auth_url:
+            try:
+                webbrowser.open(auth_url)
+            except Exception:
+                pass
+            # Use broker's configured redirect_uri for messaging (optional: expose via broker)
+            redirect_uri = getattr(self.controller.broker, "redirect_uri", "YOUR_REDIRECT_URI")
+            messagebox.showinfo("Login", f"After logging in, you'll be redirected to: {redirect_uri}?code=YOUR_CODE_HERE")
+            self.controller.show_frame(AuthFrame)
+        else:
+            # For non-OAuth brokers (e.g., IBKR session), you may already be connected
+            messagebox.showinfo("Login", "Broker connected (no OAuth required).")
+            self.controller.after_auth()
         
 class AuthFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -159,30 +172,56 @@ class AuthFrame(ttk.Frame):
         self.auth_button = ttk.Button(self, text="Authenticate", width=50, command=self.authenticate)
         self.auth_button.grid(row=2, column=1, columnspan=2, padx=2, pady=2)
         self.controller.add_outer_rows_and_cols(self)
+
+        # Session state
         self.refresh_token = None
         self.access_token = None
         self.api_server = None
         self.expiry_time = None
         self.thread = None
         self.lock = threading.Lock()
-        
+
     def authenticate(self):
         code = self.code_entry.get().strip()
         if not code:
             messagebox.showwarning("Input Error", "No code provided.")
             return
-        token_data = qt_api.exchange_code_for_tokens(code)
+
+        # Call the broker to complete OAuth
+        try:
+            token_data = self.controller.broker.complete_auth(code)
+        except NotImplementedError:
+            messagebox.showerror("Auth Error", "This broker does not use code-based auth.")
+            return
+        except Exception as e:
+            messagebox.showerror("Auth Error", f"Failed to authenticate: {e}")
+            return
+
         messagebox.showinfo("Tokens", f"Received tokens: {json.dumps(token_data, indent=2)}")
-        self.api_server = token_data.get('api_server', '')   
+
+        # Store for UI and streamer
+        self.api_server = token_data.get('api_server', '')
         self.access_token = token_data.get('access_token', '')
         self.refresh_token = token_data.get('refresh_token', '')
-        self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=token_data.get('expires_in', 0))
+        self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
+            seconds=token_data.get('expires_in', 0)
+        )
+
+        # Optional: persist into controller for app-wide access
+        self.controller.session = {
+            "api_server": self.api_server,
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "expiry_time": self.expiry_time,
+        }
+
         if self.api_server and self.access_token:
             # Start background thread for auto-refresh
             self.thread = threading.Thread(target=self.auto_refresh_tokens, daemon=True)
             self.thread.start()
+
         self.controller.after_auth()
-        
+
     def auto_refresh_tokens(self):
         while True:
             with self.lock:
@@ -193,22 +232,25 @@ class AuthFrame(ttk.Frame):
 
             time.sleep(time_to_wait)
             try:
-                refresh_token_data = qt_api.refresh_access_token(self.refresh_token)
-                self.api_server = refresh_token_data.get('api_server', '')   
-                self.access_token = refresh_token_data.get('access_token', '') 
-                self.refresh_token = refresh_token_data.get('refresh_token', '')   
+                # Use broker to refresh (abstracted method name)
+                refresh_data = self.controller.broker.refresh_token(self.refresh_token)
+
+                self.api_server = refresh_data.get('api_server', '')
+                self.access_token = refresh_data.get('access_token', '')
+                self.refresh_token = refresh_data.get('refresh_token', '')
 
                 # Schedule UI-safe update
                 self.after(0, self._update_streamer)
 
                 self.expiry_time = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(
-                    seconds=refresh_token_data.get("expires_in", 0)
+                    seconds=refresh_data.get("expires_in", 0)
                 )
             except Exception as e:
                 print("Failed to refresh token:", e)
                 time.sleep(30)
 
     def _update_streamer(self):
+        # Update the active chart streamer safely on the UI thread
         streamer = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_chart().streamer
         if streamer:
             streamer.access_token = self.access_token
@@ -697,18 +739,16 @@ class TradingStrategyFrame(ttk.Frame):
             print("No access token found, please log in and authenticate first")
             return   
         try:   
-            symbol_data = qt_api.get_stock_data(access_token=my_access_token, api_server=my_api_server, symbol_str=stock_symbol)
+            symbol_data = self.controller.broker.get_symbols(query=stock_symbol)
             if not symbol_data:
                 print("No data found for:", stock_symbol)
                 return
             symbol_id = symbol_data[0]['symbolId']
             active_chart = self.top_tabs.get_active_chart()
-            candle_data = qt_api.get_candles_paginated(
-                access_token=my_access_token, 
-                api_server=my_api_server, 
-                symbol_id=symbol_id, 
-                start_date=self.top_tabs.get_active_general_tab().start_date_input.get_date(), 
-                end_date=self.top_tabs.get_active_general_tab().end_date_input.get_date(),
+            candle_data = self.controller.broker.get_candles(
+                symbol=symbol_id, 
+                start=self.top_tabs.get_active_general_tab().start_date_input.get_date(), 
+                end=self.top_tabs.get_active_general_tab().end_date_input.get_date(),
                 interval= active_chart.time_interval
             )
             candle_data_pd = pd.DataFrame(candle_data)
@@ -894,11 +934,7 @@ class CandlestickChartFrame(ttk.Frame):
             )
             stock_symbol = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip()
             self.candle_aggregator = tick_processor.CandleAggregator(stock_symbol, "OneMinute")             
-            symbol_data = qt_api.get_stock_data(
-                access_token=auth_frame.access_token,
-                api_server=auth_frame.api_server, 
-                symbol_str=stock_symbol
-            )
+            symbol_data = self.controller.broker.get_symbols(query=stock_symbol)
             symbol_id = symbol_data[0]['symbolId']
             for rb in self.timeframe_buttons:
                 rb.config(state=tk.DISABLED)

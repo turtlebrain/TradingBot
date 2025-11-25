@@ -7,8 +7,12 @@ class BrokerInterface(ABC):
 
     @abstractmethod
     def authenticate(self) -> Dict[str, Any]:
-        """Perform broker-specific authentication and return a session or tokens."""
+        """Start authentication (OAuth or session)."""
         pass
+
+    def complete_auth(self, code: str) -> Dict[str, Any]:
+        """Finish OAuth if applicable. Optional for non-OAuth brokers."""
+        raise NotImplementedError("This broker does not require a code to complete auth.")
 
     @abstractmethod
     def refresh_token(self, refresh_token: str) -> Dict[str, Any]:
