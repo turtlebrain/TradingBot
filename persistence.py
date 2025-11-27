@@ -133,8 +133,8 @@ def delete_account(account_id):
 # --- Trading file i/o ---
 def start_trade_session(account_id, symbol, stream_type="live",
                         buy_strategy=None, sell_strategy=None):
-    buy_json = json.dumps(buy_strategy.to_dict()) if buy_strategy else None
-    sell_json = json.dumps(sell_strategy.to_dict()) if sell_strategy else None
+    buy_json = json.dumps(buy_strategy.serialize()) if buy_strategy else None
+    sell_json = json.dumps(sell_strategy.serialize()) if sell_strategy else None
 
     with get_connection() as conn:
         cur = conn.cursor()
