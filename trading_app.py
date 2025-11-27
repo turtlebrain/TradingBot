@@ -775,9 +775,12 @@ class TradingStrategyFrame(ttk.Frame):
             # --- LIVE MODE ---
             if not hasattr(self, "_live_running") or not self._live_running:
                 acc_id = int(self.active_account.name)
-                stock_symbol = self.top_tabs.get_active_chart().candle_aggregator.symbol
+                candles = self.top_tabs.get_active_chart().candle_aggregator
+                buy_strategy = self.top_tabs.get_active_strategy_tab().buy_section
+                sell_strategy = self.top_tabs.get_active_strategy_tab().sell_section
+                stock_symbol = candles.symbol
                 # Start live strategy
-                session_id = persist.start_trade_session(acc_id, stock_symbol, "live")
+                session_id = persist.start_trade_session(acc_id, stock_symbol, "live", buy_strategy, sell_strategy)
                 self.current_session_id = session_id
 
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
@@ -798,9 +801,9 @@ class TradingStrategyFrame(ttk.Frame):
                     self.update_account_info()
 
                 self._finalize_live = engine.run_live_strategy(
-                    candle_source=self.top_tabs.get_active_chart().candle_aggregator,
-                    buy_logic=self.top_tabs.get_active_strategy_tab().buy_section,
-                    sell_logic=self.top_tabs.get_active_strategy_tab().sell_section,
+                    candle_source=candles,
+                    buy_logic=buy_strategy,
+                    sell_logic=sell_strategy,
                     position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                     position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
                     stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
@@ -853,12 +856,14 @@ class TradingStrategyFrame(ttk.Frame):
             # --- BACKTEST MODE ---
             acc_id = int(self.active_account.name)
             stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip() 
-            session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest")
+            buy_strategy = self.top_tabs.get_active_strategy_tab().buy_section
+            sell_strategy = self.top_tabs.get_active_strategy_tab().sell_section
+            session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest",buy_strategy, sell_strategy)
             candle_data = pd.DataFrame(self.search(show_output=False))
             backtest_results = engine.backtest_strategy(
                 data=candle_data,
-                buy_logic=self.top_tabs.get_active_strategy_tab().buy_section,
-                sell_logic=self.top_tabs.get_active_strategy_tab().sell_section,
+                buy_logic=buy_strategy,
+                sell_logic=sell_strategy,
                 position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                 position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
                 stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,

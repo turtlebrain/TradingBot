@@ -1,6 +1,7 @@
 import sqlite3
 import pandas as pd
 import datetime
+import json
 
 DB_FILE = "trading_app.db"
 
@@ -48,7 +49,9 @@ def init_db():
             session_id   INTEGER PRIMARY KEY AUTOINCREMENT,
             account_id   INTEGER NOT NULL,
             stream_type  TEXT NOT NULL CHECK(stream_type IN ('live','backtest')),
-            symbol       TEXT NOT NULL,  
+            symbol       TEXT NOT NULL,
+            buy_strategy TEXT,   -- NEW: serialized buy strategy
+            sell_strategy TEXT,  -- NEW: serialized sell strategy
             started_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             ended_at     TIMESTAMP,
             FOREIGN KEY(account_id) REFERENCES accounts(account_id)
@@ -128,12 +131,18 @@ def delete_account(account_id):
     return load_accounts()
 
 # --- Trading file i/o ---
-def start_trade_session(account_id, symbol, stream_type="live"):
+def start_trade_session(account_id, symbol, stream_type="live",
+                        buy_strategy=None, sell_strategy=None):
+    buy_json = json.dumps(buy_strategy.to_dict()) if buy_strategy else None
+    sell_json = json.dumps(sell_strategy.to_dict()) if sell_strategy else None
+
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO trade_sessions (account_id, stream_type, symbol) VALUES (?, ?, ?)",
-            (account_id, stream_type, symbol)
+            """INSERT INTO trade_sessions
+               (account_id, stream_type, symbol, buy_strategy, sell_strategy)
+               VALUES (?, ?, ?, ?, ?)""",
+            (account_id, stream_type, symbol, buy_json, sell_json)
         )
         conn.commit()
         return cur.lastrowid
