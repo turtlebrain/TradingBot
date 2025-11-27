@@ -211,42 +211,32 @@ def run_live_strategy(
     ui_callback=None,
     history_window=500,
 ):
-    """
-    Run a trading strategy in live paper mode using streaming candles only.
-    Resumes from existing account and positions if account_id is provided.
-    Only processes candles for symbols that match existing positions or
-    the candle_source symbol.
-    """
-
-    # --- Load account and positions if account_id is given ---
     existing_positions = {}
     existing_cash = None
+    realized_pnl_total = 0.0
 
     if account_id:
-        acct_row = persist.open_account(account_id)  # marks account as opened
+        acct_row = persist.open_account(account_id)
         existing_cash = float(acct_row["cash"])
+        realized_pnl_total = float(acct_row.get("realized_pnl", 0.0))
 
         pos_df = persist.load_positions(account_id)
         if not pos_df.empty:
             for _, row in pos_df.iterrows():
                 existing_positions[row["symbol"]] = PositionRecord(
-                    timestamp=row["timestamp"],
+                    date=row.get("timestamp", row.name),
                     symbol=row["symbol"],
                     shares=int(row["quantity"]),
                     avg_price=float(row["avg_price"]),
                     market_price=float(row["current_price"]),
-                    realized_pnl=float(row["realized_pnl"]),
-                    unrealized_pnl=float(row["unrealized_pnl"]),
+                    market_value=float(row["current_price"]) * int(row["quantity"]),
+                    unrealized_pnl=float(row.get("unrealized_pnl", 0.0)),
+                    side=row.get("side", ""),
                 )
 
-    # --- Initialize portfolio state ---
     init_cash = float(existing_cash if existing_cash is not None else starting_capital)
-    # If multiple positions, aggregate shares only for the candle_source symbol
     symbol = getattr(candle_source, "symbol", None)
-    if symbol in existing_positions:
-        init_shares = int(existing_positions[symbol].shares)
-    else:
-        init_shares = 0
+    init_shares = int(existing_positions[symbol].shares) if symbol in existing_positions else 0
 
     state = PortfolioState(
         cash=init_cash,
@@ -254,6 +244,8 @@ def run_live_strategy(
         stop_loss=float("nan"),
         prev_equity=init_cash,
     )
+    # add realized_pnl tracking to state
+    state.realized_pnl = realized_pnl_total
 
     trade_records: list[TradeRecord] = []
     position_records: list[PositionRecord] = []
@@ -273,13 +265,14 @@ def run_live_strategy(
         unrealized_pnl = (close - avg_price) * qty if qty else 0.0
 
         pos0 = PositionRecord(
-            timestamp=candle_row.name,
+            date=candle_row.name,
             symbol=symbol,
             shares=qty,
             avg_price=avg_price,
             market_price=close,
-            realized_pnl=existing_position.realized_pnl,
+            market_value=qty * close,
             unrealized_pnl=unrealized_pnl,
+            side=existing_position.side,
         )
         position_records.append(pos0)
         state.prev_equity = state.cash + unrealized_pnl
@@ -291,16 +284,21 @@ def run_live_strategy(
                 quantity=pos0.shares,
                 avg_price=pos0.avg_price,
                 current_price=pos0.market_price,
-                pl=pos0.realized_pnl + pos0.unrealized_pnl,
+                unrealized_pnl=pos0.unrealized_pnl,
+                side=pos0.side,
             )
-            persist.update_account(account_id=account_id, cash=state.cash)
+            persist.update_account(
+                account_id=account_id,
+                cash=state.cash,
+                realized_pnl=state.realized_pnl,
+                equity=state.cash + pos0.market_value
+            )
 
         bootstrapped_position = True
 
     def on_new_candle(candle_row: pd.Series, symbol: str = None):
         nonlocal state, trade_records, position_records, live_candles
 
-        # --- Only process if symbol matches existing positions or candle_source symbol ---
         if symbol not in existing_positions and symbol != getattr(candle_source, "symbol", None):
             return
 
@@ -339,9 +337,15 @@ def run_live_strategy(
                 quantity=pos.shares,
                 avg_price=pos.avg_price,
                 current_price=pos.market_price,
-                pl=pos.realized_pnl + pos.unrealized_pnl,
+                unrealized_pnl=pos.unrealized_pnl,
+                side=pos.side,
             )
-            persist.update_account(account_id=account_id, cash=state.cash)
+            persist.update_account(
+                account_id=account_id,
+                cash=state.cash,
+                realized_pnl=state.realized_pnl,
+                equity=state.cash + pos.market_value
+            )
 
         if ui_callback and rec is not None:
             df = pd.DataFrame([rec.__dict__], index=[candle_row.name])
@@ -362,13 +366,18 @@ def run_live_strategy(
                     quantity=pos.shares,
                     avg_price=pos.avg_price,
                     current_price=pos.market_price,
-                    pl=pos.realized_pnl + pos.unrealized_pnl,
+                    unrealized_pnl=pos.unrealized_pnl,
+                    side=pos.side,
                 )
-                persist.update_account(account_id=account_id, cash=state.cash)
+                persist.update_account(
+                    account_id=account_id,
+                    cash=state.cash,
+                    realized_pnl=state.realized_pnl,
+                    equity=state.cash + pos.market_value
+                )
         return trades_df
 
     return finalize
-
 
 
 def compute_sharpe_ratio(returns: pd.Series, timeframe: str = "OneDay", annual_rf: float = 0.02) -> float:
@@ -437,31 +446,44 @@ def calculate_avg_price(old_shares, old_avg_price, trade_shares, trade_price):
 def calculate_position_pnl(prev_pos, trade_shares, trade_price, current_price, avg_price, total_shares):
     """
     Calculate realized and unrealized P/L for a position.
-    
+
     prev_pos: previous PositionRecord or None
     trade_shares: signed trade size (positive buy, negative sell)
     trade_price: execution price of the trade
     current_price: latest market price
     avg_price: updated average price of the position
     total_shares: current open shares after the trade
+
+    Returns:
+        realized_delta: realized P&L from this trade (to add to account state)
+        unrealized_pnl: unrealized P&L on remaining shares
     """
-    realized_pnl = prev_pos.realized_pnl if prev_pos else 0.0
+
+    realized_delta = 0.0
 
     # If reducing or flipping, compute realized P/L on closed portion
     if prev_pos and (trade_shares * prev_pos.shares) < 0:
         closed_qty = min(abs(trade_shares), abs(prev_pos.shares))
         direction = 1 if prev_pos.shares > 0 else -1
-        realized_pnl += closed_qty * (trade_price - prev_pos.avg_price) * direction
+        realized_delta = closed_qty * (trade_price - prev_pos.avg_price) * direction
 
     # Unrealized P/L on remaining shares
     unrealized_pnl = (current_price - avg_price) * total_shares
 
-    return realized_pnl, unrealized_pnl
+    return realized_delta, unrealized_pnl
 
 def update_position_record(position_records, rec: TradeRecord, state: PortfolioState, candle_row, symbol: str):
+    """
+    Update the position record given a new trade and current portfolio state.
+
+    - Uses calculate_position_pnl to compute realized delta (for account) and unrealized P&L (for position).
+    - Updates PortfolioState.realized_pnl with the realized delta.
+    - Returns a new PositionRecord snapshot with unrealized P&L only.
+    """
+
     prev_pos = next((p for p in reversed(position_records) if p.symbol == symbol), None)
 
-    # calculate new average price
+    # Calculate new average price after trade
     new_avg_price = calculate_avg_price(
         old_shares=prev_pos.shares if prev_pos else 0,
         old_avg_price=prev_pos.avg_price if prev_pos else 0.0,
@@ -469,8 +491,8 @@ def update_position_record(position_records, rec: TradeRecord, state: PortfolioS
         trade_price=rec.exec_price if rec.exec_price is not None and not math.isnan(rec.exec_price) else 0.0
     )
 
-    # calculate realized/unrealized P&L
-    realized_pnl, unrealized_pnl = calculate_position_pnl(
+    # Compute realized delta (for account) and unrealized P&L (for position)
+    realized_delta, unrealized_pnl = calculate_position_pnl(
         prev_pos=prev_pos,
         trade_shares=rec.order,
         trade_price=rec.exec_price,
@@ -479,13 +501,17 @@ def update_position_record(position_records, rec: TradeRecord, state: PortfolioS
         total_shares=state.shares
     )
 
+    # Update account-level realized P&L
+    if rec is not None and rec.exec_price is not None:
+        state.realized_pnl = getattr(state, "realized_pnl", 0.0) + realized_delta
+
+    # Build new PositionRecord snapshot (only unrealized P&L)
     pos = PositionRecord(
         symbol=symbol,
         shares=state.shares,
         avg_price=new_avg_price,
         market_price=candle_row["close"],
         market_value=state.shares * candle_row["close"],
-        realized_pnl=realized_pnl,
         unrealized_pnl=unrealized_pnl,
         side="long" if state.shares > 0 else "short" if state.shares < 0 else "",
         date=candle_row.name
