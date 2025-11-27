@@ -676,6 +676,7 @@ class TradingStrategyFrame(ttk.Frame):
             )
         )
     
+    
     def set_active_account(self, account_meta):
         """
         Set the active account. If valid, update cash_var from metadata.
@@ -774,8 +775,9 @@ class TradingStrategyFrame(ttk.Frame):
             # --- LIVE MODE ---
             if not hasattr(self, "_live_running") or not self._live_running:
                 acc_id = int(self.active_account.name)
+                stock_symbol = self.top_tabs.get_active_chart().candle_aggregator.symbol
                 # Start live strategy
-                session_id = persist.start_trade_session(acc_id, "live")
+                session_id = persist.start_trade_session(acc_id, stock_symbol, "live")
                 self.current_session_id = session_id
 
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
@@ -850,7 +852,8 @@ class TradingStrategyFrame(ttk.Frame):
         else:
             # --- BACKTEST MODE ---
             acc_id = int(self.active_account.name)
-            session_id = persist.start_trade_session(acc_id, "backtest")
+            stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip() 
+            session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest")
             candle_data = pd.DataFrame(self.search(show_output=False))
             backtest_results = engine.backtest_strategy(
                 data=candle_data,
@@ -1143,7 +1146,10 @@ class BackTestingResultsFrame(ttk.Frame):
         # Populate tree view
         self.populate_backtest_display(trade_stream)
         # Update chart 
-        self.results_chart.results = trade_stream      
+        acc_id = int(self.controller.frames[TradingStrategyFrame].active_account.name)
+        trade_session = persist.load_trade_sessions(acc_id).loc[session_id]
+        self.results_chart.results = trade_stream
+        self.results_chart.stock_symbol = trade_session['symbol'] if not trade_session.empty else ""      
         self.result_settings_tab.populate_result_text(self.result_settings_tab.get_result_summary(trade_stream))   
         self.results_chart.update_chart() 
         
@@ -1198,6 +1204,7 @@ class ResultChartFrame(ttk.Frame):
         self.results = backtest_results
         self.result_var = result_var
         self.result_var.trace_add("write", self.update_chart)    
+        self.stock_symbol = ""
         # Show labels toggle
         self.show_label_var = tk.BooleanVar(value=False)
         self.show_label_toggle = ttk.Checkbutton(
@@ -1237,7 +1244,7 @@ class ResultChartFrame(ttk.Frame):
         # Always reset chart before plotting
         self.reset_chart()
         chart = self.create_chart(show_labels=self.show_label)
-
+        chart.title = self.stock_symbol
         series_list = self.controller.frames[BackTestingResultsFrame].result_settings_tab.selected_series
 
         if series_list:
