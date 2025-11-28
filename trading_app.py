@@ -1344,7 +1344,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
     def __init__(self, parent):
         super().__init__(parent, title="Strategy")   
         # BUY section 
-        strategy_list = list(strategies.TradingStrategy.trading_strategies.keys())
+        strategy_list = list(strategies.trading_strategies.keys())
         self.buy_section = stb.StrategySection(self.content, title="BUY", strategies = strategy_list, strategy_param_getter = self.get_strategy_params)
         self.buy_section.pack(fill="x", pady=5)
         # SELL section  
