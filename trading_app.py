@@ -571,7 +571,7 @@ class TradingStrategyFrame(ttk.Frame):
 
         # --- Bottom row: account info + positions ---
         account_group = ttkb.LabelFrame(self, text="Account Info", bootstyle="info")
-        account_group.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        account_group.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
 
         # Label bound to cash_var
         self.pnl_var = tk.StringVar(value=f"${self.cash_var.get():,.2f} Cash")
@@ -581,7 +581,7 @@ class TradingStrategyFrame(ttk.Frame):
             bootstyle="info",
             font=("Helvetica", 16, "bold")
         )
-        pnl_label.pack(pady=(10, 5))
+        pnl_label.pack(pady=(5, 5))
 
         # Meter (values updated in update_account_info)
         self.pnl_meter = ttkb.Meter(
@@ -593,7 +593,7 @@ class TradingStrategyFrame(ttk.Frame):
             bootstyle="secondary",
             subtext="N/A"
         )
-        self.pnl_meter.pack(pady=10)
+        self.pnl_meter.pack(pady=5)
 
         # Positions container (unchanged)
         positions_container = ttk.Frame(self)
@@ -909,7 +909,7 @@ class CandlestickChartFrame(ttk.Frame):
         )
         self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
         
-        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 800, height = 450)
+        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 950, height = 450)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
         
         self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
