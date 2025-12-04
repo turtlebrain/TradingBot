@@ -49,7 +49,7 @@ def train_rule_ml_classifier(df: pd.DataFrame, params:dict) ->dict:
         reports.append(report)
         # Optional: print(f"Fold {fold_idx+1}/{n_splits}\n{report}")
     
-    # 4) Fina fit on all data
+    # 4) Fit on all data
     pipeline.fit(X,y)
     
     # 5) Package results
