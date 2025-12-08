@@ -111,7 +111,7 @@ def support_resistance_structure(data: pd.DataFrame, params: dict) -> pd.DataFra
 
 # Map of strategy names to their corresponding methods
 trading_strategies = {
-    "DMA Crossover" : double_moving_average_crossover,
+    "DMA Crossing" : double_moving_average_crossover,
     "EMA Breakout" : exponential_moving_average_breakout,
     "S/R Structure" : support_resistance_structure,
     "RSI" : relative_strength_index

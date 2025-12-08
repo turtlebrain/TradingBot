@@ -46,7 +46,7 @@ class StrategyRow(ttk.Frame):
         self.param_btn = ttk.Button(self, text="P", width=2, bootstyle=INFO, command=self.open_params)
         self.param_btn.pack(side=LEFT, padx=2)
 
-        self.logic = ttk.Combobox(self, values=["AND", "OR"], width=5, state="readonly")
+        self.logic = ttk.Combobox(self, values=["AND", "OR"], width=4, state="readonly")
         self.logic.current(0)
         self.logic.pack(side=LEFT, padx=2)
 
@@ -150,23 +150,27 @@ class GroupRow(ttk.Frame):
 class StrategySection(ttk.Frame):
     def __init__(self, master, title="Section", strategies=None, strategy_param_getter=None, *args, **kwargs):
         super().__init__(master, *args, **kwargs)
-
-        # Default strategies if none provided
+    
         self.strategies = strategies 
         self.strategy_param_getter = strategy_param_getter 
-
-        ttk.Label(self, text=title, font="-size 10 -weight bold").pack(anchor="w")
-
-        selector = ttk.Frame(self)
-        selector.pack(fill=X, pady=5)
-        self.combo = ttk.Combobox(selector, values=self.strategies, width=20)
+    
+        # Top row: Label + Combo + Add Button
+        top_row = ttk.Frame(self)
+        top_row.pack(fill=X, pady=5)
+    
+        ttk.Label(top_row, text=title, font="-size 10 -weight bold").pack(side=LEFT, padx=5)
+        self.combo = ttk.Combobox(top_row, values=self.strategies, width=20)
         self.combo.pack(side=LEFT, padx=5)
-        ttk.Button(selector, text="➕", width=2, bootstyle=SUCCESS, command=self.add_strategy).pack(side=LEFT, padx=5)
-
+        ttk.Button(top_row, text="➕", width=2, bootstyle=SUCCESS, command=self.add_strategy).pack(side=LEFT, padx=5)
+    
+        # Middle row: List box
         self.list_frame = ttk.Frame(self)
         self.list_frame.pack(fill=X, pady=5)
-
-        ttk.Button(self, text="Group", bootstyle=SECONDARY, command=self.group_selected).pack(pady=5)
+    
+        # Bottom row: Centered Group button
+        bottom_row = ttk.Frame(self)
+        bottom_row.pack(fill=X, pady=5)
+        ttk.Button(bottom_row, text="Group", bootstyle=SECONDARY, command=self.group_selected).pack(anchor="center")
 
     def add_strategy(self):
         name = self.combo.get()

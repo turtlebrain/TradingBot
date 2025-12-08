@@ -63,7 +63,7 @@ class TradingBotApp:
             frame.grid(row=1, column=0, sticky="nsew")
 
         # Start at login
-        self.show_frame(LoginFrame)
+        self.show_frame(TradingStrategyFrame)
      
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -430,7 +430,7 @@ class TabbedWorkspaceFrame(ttk.Frame):
         workspace.rowconfigure(0, weight=1)
 
         # Sidebar Notebook
-        notebook = ttk.Notebook(workspace, style="TNotebook")
+        notebook = ttk.Notebook(workspace, width = 255, style="TNotebook")
         notebook.grid(row=0, column=0, sticky="ns")
 
         general_tab = GeneralInfoCollapsibleFrame(notebook, self.controller)
@@ -443,7 +443,7 @@ class TabbedWorkspaceFrame(ttk.Frame):
 
         # Chart
         chart = CandlestickChartFrame(workspace, self.controller)
-        chart.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        chart.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
 
         tab_widget = self._create_tab_widget(label, closable)
         self.workspaces.append((workspace, tab_widget, chart, general_tab, strategy_tab, execution_tab))
@@ -586,14 +586,14 @@ class TradingStrategyFrame(ttk.Frame):
         # Meter (values updated in update_account_info)
         self.pnl_meter = ttkb.Meter(
             master=account_group,
-            metersize=200,
+            metersize=245,
             amountused=0,
             amounttotal=1,
             metertype="semi",
             bootstyle="secondary",
             subtext="N/A"
         )
-        self.pnl_meter.pack(pady=5)
+        self.pnl_meter.pack()
 
         # Positions container (unchanged)
         positions_container = ttk.Frame(self)
