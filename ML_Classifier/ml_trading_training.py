@@ -6,8 +6,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.metrics import classification_report
 from sklearn.model_selection import TimeSeriesSplit
 
-from ml_trading_features import build_features
-from ml_trading_labels import build_labels
+from ML_Classifier.ml_trading_features import build_features
+from ML_Classifier.ml_trading_labels import build_labels
 
 def train_rule_ml_classifier(df: pd.DataFrame, params:dict) ->dict:
     """

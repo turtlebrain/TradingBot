@@ -32,9 +32,9 @@ def build_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     
     # Rolling context
     if params.get("extra_candle_features", True):
-        feats["ret_5m"] = df["close".pct_chage(5)]
-        feats["vol_5m"] = df['close'].pct_change().rolling(5).std()
-        feats["vol_15m"] = df['close'].pct_change().rolling(15).std()
+        feats["ret_5m"] = df["close"].pct_change(5)
+        feats["vol_5m"] = df["close"].pct_change().rolling(5).std()
+        feats["vol_15m"] = df["close"].pct_change().rolling(15).std()
         feats["mom_10m"] = df["close"].diff(10)
         
     # Final cleanup

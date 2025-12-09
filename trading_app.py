@@ -23,6 +23,7 @@ import strategy_tree_builder as stb
 import persistence as persist
 import tick_processor
 import queue
+from ML_Classifier.ml_trading_training import train_rule_ml_classifier
 
 
 class TradingBotApp:
@@ -436,7 +437,7 @@ class TabbedWorkspaceFrame(ttk.Frame):
         notebook.grid(row=0, column=0, sticky="ns")
 
         general_tab = GeneralInfoCollapsibleFrame(notebook, self.controller)
-        strategy_tab = StrategyCollapsibleFrame(notebook)
+        strategy_tab = StrategyCollapsibleFrame(notebook, self.controller)
         execution_tab = ExecutionCollasibleFrame(notebook)
 
         notebook.add(general_tab, text="General")
@@ -1343,9 +1344,10 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
 
 
 class StrategyCollapsibleFrame(CollapsibleFrame):
-    def __init__(self, parent):
+    def __init__(self, parent, controller):
         super().__init__(parent, title="Strategy")
-
+        self.controller = controller
+        
         # --- Toggle Row ---
         toggle_row = ttk.Frame(self.content)
         toggle_row.pack(fill="x", pady=5)
@@ -1427,8 +1429,35 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             ttk.Checkbutton(candle_frame, text=label, variable=var).pack(anchor="w")
 
         # --- Train button ---
-        ttk.Button(ml_frame, text="Train Model").pack(pady=5)
+        ttk.Button(ml_frame, text="Train Model", command = self.on_train_model).pack(pady=5)
 
+    def on_train_model(self):
+        # Collect indicator strategies
+        selected_indicators = []
+        if hasattr(self, "indicator_section"):
+            selected_indicators.append(self.indicator_section.combo.get())
+            # You could also loop through list_frame children if multiple strategies are added
+
+        # Collect candle features
+        candle_params = {key: var.get() for key, var in self.candle_feature_vars.items()}
+
+        # Build params dict
+        params = {
+            "indicators": selected_indicators,
+            "extra_candle_features": candle_params
+        }
+
+        try:
+            df = pd.DataFrame(self.controller.frames[TradingStrategyFrame].search(show_output=False))
+            model = train_rule_ml_classifier(df, params)  # your ML training function
+            self.show_training_status("Training complete ✅")
+        except Exception as e:
+            self.show_training_status(f"Training failed: {e}")
+
+    def show_training_status(self, msg):
+        status_label = ttk.Label(self.dynamic_frame, text=msg, foreground="green")
+        status_label.pack(pady=5)
+        
     def switch_mode(self, event=None):
         mode = self.mode_var.get()
         if mode == "Indicator-Based":
