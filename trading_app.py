@@ -1516,37 +1516,47 @@ class ResultSettingsCollapsibleFrame(CollapsibleFrame):
     def __init__(self, parent, controller, result_headers):
         super().__init__(parent, title="Result Settings")
         self.controller = controller
-        # Track selected series for multi-line plotting
         self.selected_series = []
-        
+
+        # --- Row 0: Selector + Add Button ---
+        selector_row = ttk.Frame(self.content)
+        selector_row.pack(fill="x", pady=5)
+
         self.result_var = tk.StringVar(value=result_headers[0])
-        opt_frame = tk.Frame(self.content, bg="#f0f0f0")
-        opt_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
+        opt = ttk.Combobox(selector_row, values=result_headers,
+                           textvariable=self.result_var, state="readonly", width=25)
+        opt.pack(side="left", padx=5, fill="x", expand=True)
 
-        opt = ttk.Combobox(opt_frame, values=result_headers, textvariable=self.result_var, state="readonly")
-        opt.pack(side="left", fill="x", expand=True)
+        add_btn = ttk.Button(selector_row, text="➕", width=2,
+                             bootstyle=SUCCESS, command=self.add_series)
+        add_btn.pack(side="left", padx=5)
 
-        add_btn = ttk.Button(opt_frame, text="➕", width=2, bootstyle=SUCCESS, command=self.add_series)
-        add_btn.pack(side="left", padx=(5, 0))
+        # --- Row 1: Selected Series List ---
+        self.series_frame = ttk.Frame(self.content)
+        self.series_frame.pack(fill="x", pady=5)
 
-        # Row 1: Selected series list
-        self.series_frame = tk.Frame(self.content, bg="#f0f0f0")
-        self.series_frame.grid(row=1, column=0, sticky="ns", padx=5)
+        # --- Row 2: Result Summary ---
+        summary_frame = ttk.LabelFrame(self.content, text="Summary")
+        summary_frame.pack(fill="x", pady=5)
 
-        # Result summary (Net Profit, Final Equity, %return)
-        self.result_summary = tk.Label(self.content, text ="")
-        self.result_summary.grid(row = 2, column = 0, sticky="ns")
-        results_summary = { 
-            "final_equity"  :   0,
-            "profits"       :   0,
-            "returns"       :   0,
-            "sharpe_ratio"  :   0
+        self.result_summary = ttk.Label(summary_frame, text="", anchor="w", justify="left")
+        self.result_summary.pack(fill="x", padx=5, pady=5)
+
+        results_summary = {
+            "final_equity": 0,
+            "profits": 0,
+            "returns": 0,
+            "sharpe_ratio": 0
         }
-        self.result_summary_var =  self.populate_result_text(results_summary)
-        
-        # Run new test button
-        self.run_new_test_button = ttk.Button(self.content, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=3, column=0, padx=5, pady=5, sticky="ns")
+        self.result_summary_var = self.populate_result_text(results_summary)
+
+        # --- Row 3: Run New Test Button ---
+        action_row = ttk.Frame(self.content)
+        action_row.pack(fill="x", pady=10)
+
+        self.run_new_test_button = ttk.Button(action_row, text="Run New Test",
+                                              bootstyle=PRIMARY, command=self.run_new_test)
+        self.run_new_test_button.pack(anchor="center")
         
     # --- Series management ---
     def add_series(self):
