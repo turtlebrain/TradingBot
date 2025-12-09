@@ -21,7 +21,7 @@ class ParamDialog(tk.Toplevel):
             self.entries[name] = entry
 
         # Apply button
-        ttk.Button(self, text="Apply", bootstyle=SUCCESS, command=self.apply).grid(
+        ttk.Button(self, text="Apply", command=self.apply).grid(
             row=len(params), column=0, columnspan=2, pady=10
         )
 
@@ -159,7 +159,7 @@ class StrategySection(ttk.Frame):
         top_row.pack(fill=X, pady=5)
     
         ttk.Label(top_row, text=title, font="-size 10 -weight bold").pack(side=LEFT, padx=5)
-        self.combo = ttk.Combobox(top_row, values=self.strategies, width=20)
+        self.combo = ttk.Combobox(top_row, values=self.strategies, width=18, state="readonly")
         self.combo.pack(side=LEFT, padx=5)
         ttk.Button(top_row, text="➕", width=2, bootstyle=SUCCESS, command=self.add_strategy).pack(side=LEFT, padx=5)
     

@@ -28,6 +28,8 @@ import queue
 class TradingBotApp:
     def __init__(self, root):
         self.root = root
+        style = ttkb.Style("flatly") 
+        style.master = root         
         self.root.title("TradingBot")
         self.root.geometry("1440x900")
         self.system_running = False
@@ -63,7 +65,7 @@ class TradingBotApp:
             frame.grid(row=1, column=0, sticky="nsew")
 
         # Start at login
-        self.show_frame(TradingStrategyFrame)
+        self.show_frame(LoginFrame)
      
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
@@ -270,7 +272,7 @@ class AccountManagerFrame(ttk.Frame):
         
         self.render_accounts()
         
-        ttk.Button(self, text="➕ New Account", width=25, bootstyle=SUCCESS, command=self.create_account).pack(pady=10)
+        ttk.Button(self, text="New Account", width=25, bootstyle=INFO, command=self.create_account).pack(pady=10)
     
     def render_accounts(self):
         for widget in self.list_frame.winfo_children():
@@ -291,7 +293,7 @@ class AccountManagerFrame(ttk.Frame):
             name_lbl = ttk.Label(row, text=meta["name"], font=("Poppins", 12, "bold"))
             created_lbl = ttk.Label(row, text=f"Created: {meta['date_created']}", foreground="gray")
             opened_lbl = ttk.Label(row, text=f"Last opened: {meta['last_opened']}", foreground="gray")
-            rename_btn = ttk.Button(row, text="Rename", width = 8, bootstyle=INFO, command=lambda n=meta.name: self.rename_account(n))
+            rename_btn = ttk.Button(row, text="Rename", width = 8, command=lambda n=meta.name: self.rename_account(n))
             delete_btn = ttk.Button(row, text="Delete", width = 8, bootstyle=DANGER, command=lambda n=meta.name: self.delete_account(n))
 
             name_lbl.pack(side="left")
@@ -375,7 +377,7 @@ class AccountDialog:
         self.capital_entry = ttk.Entry(top)
         self.capital_entry.pack(padx=5, pady=5)
 
-        ttk.Button(top, text="Create", command=self.on_ok, bootstyle=SUCCESS).pack(padx=10, pady=10)
+        ttk.Button(top, text="Create", command=self.on_ok).pack(padx=10, pady=10)
 
         self.result = None
 
@@ -1321,10 +1323,10 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
 
         self.start_date_input = DateEntry(
             self.content,
-            bootstyle="success",
+            bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.start_date_input.set_date(datetime.date(2025, 9, 1))
+        self.start_date_input.set_date(datetime.date(2025, 10, 1))
         self.start_date_input.pack(fill="x", pady=2)
 
         # End date
@@ -1333,30 +1335,113 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
 
         self.end_date_input = DateEntry(
             self.content,
-            bootstyle="success",
+            bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.end_date_input.set_date(datetime.date(2025, 9, 30))
+        self.end_date_input.set_date(datetime.date(2025, 10, 30))
         self.end_date_input.pack(fill="x", pady=2)
 
 
 class StrategyCollapsibleFrame(CollapsibleFrame):
     def __init__(self, parent):
-        super().__init__(parent, title="Strategy")   
-        # BUY section 
+        super().__init__(parent, title="Strategy")
+
+        # --- Toggle Row ---
+        toggle_row = ttk.Frame(self.content)
+        toggle_row.pack(fill="x", pady=5)
+
+        ttk.Label(toggle_row, text="Strategy Mode:", font="-size 10 -weight bold").pack(side=LEFT, padx=5)
+
+        self.mode_var = tk.StringVar(value="Indicator-Based")  # default
+        self.toggle = ttk.Combobox(toggle_row, values=["Indicator-Based", "ML Classifier"],
+                                   textvariable=self.mode_var, width=20, state="readonly")
+        self.toggle.pack(side=LEFT, padx=5)
+        self.toggle.bind("<<ComboboxSelected>>", self.switch_mode)
+
+        # --- Container for dynamic content ---
+        self.dynamic_frame = ttk.Frame(self.content)
+        self.dynamic_frame.pack(fill="x", pady=5)
+
+        # Initialize with Indicator-Based content
+        self._init_indicator_content()
+
+    def _init_indicator_content(self):
+        # Clear dynamic frame
+        for widget in self.dynamic_frame.winfo_children():
+            widget.destroy()
+
         strategy_list = list(strategies.trading_strategies.keys())
-        self.buy_section = stb.StrategySection(self.content, title="BUY", strategies = strategy_list, strategy_param_getter = self.get_strategy_params)
+
+        # BUY section
+        self.buy_section = stb.StrategySection(
+            self.dynamic_frame,
+            title="BUY",
+            strategies=strategy_list,
+            strategy_param_getter=self.get_strategy_params
+        )
         self.buy_section.pack(fill="x", pady=5)
-        # SELL section  
-        self.sell_section = stb.StrategySection(self.content, title="SELL", strategies = strategy_list, strategy_param_getter = self.get_strategy_params)
+
+        # SELL section
+        self.sell_section = stb.StrategySection(
+            self.dynamic_frame,
+            title="SELL",
+            strategies=strategy_list,
+            strategy_param_getter=self.get_strategy_params
+        )
         self.sell_section.pack(fill="x", pady=5)
-    
+
+    def _init_ml_content(self):
+        # Clear dynamic frame
+        for widget in self.dynamic_frame.winfo_children():
+            widget.destroy()
+
+        ml_frame = ttk.Frame(self.dynamic_frame)
+        ml_frame.pack(fill="x", pady=5)
+
+        # --- Indicator Features ---
+        strategy_list = list(strategies.trading_strategies.keys())
+        self.indicator_section = stb.StrategySection(
+            ml_frame,
+            title="Signals",
+            strategies=strategy_list,
+            strategy_param_getter=self.get_strategy_params
+        )
+        self.indicator_section.pack(fill="x", pady=5)
+
+        # --- Extra Candle Features ---
+        candle_frame = ttk.LabelFrame(ml_frame, text="Extra Candle Features")
+        candle_frame.pack(fill="x", pady=5)
+
+        self.candle_feature_vars = {}
+
+        candle_features = {
+            "5-min return": "ret_5m",
+            "5-min volatility": "vol_5m",
+            "15-min volatility": "vol_15m",
+            "10-min momentum": "mom_10m"
+        }
+
+        for label, key in candle_features.items():
+            var = tk.BooleanVar(value=False)
+            self.candle_feature_vars[key] = var
+            ttk.Checkbutton(candle_frame, text=label, variable=var).pack(anchor="w")
+
+        # --- Train button ---
+        ttk.Button(ml_frame, text="Train Model").pack(pady=5)
+
+    def switch_mode(self, event=None):
+        mode = self.mode_var.get()
+        if mode == "Indicator-Based":
+            self._init_indicator_content()
+        else:
+            self._init_ml_content()
+
     def get_strategy_params(self, name):
         default_params = {
-            "DMA Crossover":{ "short_window"   :   20,"long_window"    :   50},
-            "S/R Structure": { "distance"   :   5},
-            "RSI": { "lookback" : 14, "overbought" : 70, "oversold" : 30},
-            "EMA Breakout": { "short_window"   :   20,"long_window"    :   50}
+            "DMA Crossing": {"short_window": 20, "long_window": 50},
+            "S/R Structure": {"distance": 5},
+            "RSI": {"lookback": 14, "overbought": 70, "oversold": 30},
+            "EMA Breakout": {"short_window": 20, "long_window": 50}
         }
         return default_params.get(name, {})
         
