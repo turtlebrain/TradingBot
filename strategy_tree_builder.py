@@ -65,7 +65,10 @@ class StrategyRow(ttk.Frame):
         # Save updated params
         self.params = new_values
         print(f"{self.name} updated params: {self.params}")
-
+        
+    def get_params(self):
+        return self.params
+    
     def remove_self(self):
         self.destroy()
 
@@ -83,7 +86,7 @@ class StrategyRow(ttk.Frame):
             "type": "strategy",
             "name": self.get_name(),       # e.g. "EMA Breakout"
             "logic": self.get_logic(),     # "AND" or "OR"
-            "params": getattr(self, "params", {}) or {},
+            "params": self.get_params(),   # parameter dict
         }
 
 
@@ -196,6 +199,17 @@ class StrategySection(ttk.Frame):
             if hasattr(c, "group_var"):
                 c.group_var.set(False)
     
+    def get_selected_strategies(self):
+        """Return list of dicts with name + params for each StrategyRow in list_frame."""
+        strategies = []
+        for child in self.list_frame.winfo_children():
+            if isinstance(child, StrategyRow):
+                strategies.append({
+                    "name": child.name,
+                    "params": child.get_params()
+                })
+        return strategies
+
     # Serialization to dict for evaluator
     def serialize(self):
         children = [

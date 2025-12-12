@@ -44,64 +44,70 @@ def build_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
 
 def add_indicator_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
-    Add ML-friendly indicator features, using existing columns if present
-    else computing them via indicator helpers.
+    Add ML-friendly indicator features based on selected indicators
+    from StrategySection. Uses existing columns if present,
+    else computes them via indicator helpers.
     """
     feats = pd.DataFrame(index=df.index)
 
-    # --- RSI ---
-    if params.get("use_rsi", True):
-        if "rsi" in df.columns:
-            feats["rsi"] = df["rsi"]
-        else:
-            rsi_df = indicators.compute_rsi_indicator(df, params.get("rsi_params", params))
-            feats["rsi"] = rsi_df["rsi"]
-        feats["rsi_overbought"] = (feats["rsi"] > 70).astype(int)
-        feats["rsi_oversold"] = (feats["rsi"] < 30).astype(int)
+    # Get selected indicators (list of dicts from StrategySection.serialize())
+    selected = params.get("indicators", [])
 
-    # --- DMA ---
-    if params.get("use_dma", True):
-        if {"dma_short", "dma_long"}.issubset(df.columns):
-            feats["dma_short"] = df["dma_short"]
-            feats["dma_long"] = df["dma_long"]
-        else:
-            dma_df = indicators.compute_dma_indicators(df, params.get("dma_params", params))
-            feats["dma_short"] = dma_df["dma_short"]
-            feats["dma_long"] = dma_df["dma_long"]
-        feats["dma_cross_up"] = (feats["dma_short"] > feats["dma_long"]).astype(int)
-        feats["dma_cross_down"] = (feats["dma_short"] < feats["dma_long"]).astype(int)
-        feats["dma_short_slope"] = feats["dma_short"].diff()
+    for ind in selected:
+        name = ind.get("name")
+        iparams = ind.get("params", {})
 
-    # --- EMA ---
-    if params.get("use_ema_breakout", True):
-        # Prefer ema_short/ema_long; if only a single 'ema' exists, still compute distance
-        have_both = {"ema_short", "ema_long"}.issubset(df.columns)
-        if have_both:
-            feats["ema_short"] = df["ema_short"]
-            feats["ema_long"] = df["ema_long"]
-        else:
-            ema_df = indicators.compute_ema_indicators(df, params.get("ema_params", params))
-            feats["ema_short"] = ema_df["ema_short"]
-            feats["ema_long"] = ema_df["ema_long"]
+        # --- RSI ---
+        if name == "RSI":
+            if "rsi" in df.columns:
+                feats["rsi"] = df["rsi"]
+            else:
+                rsi_df = indicators.compute_rsi_indicator(df, iparams)
+                feats["rsi"] = rsi_df["rsi"]
+            feats["rsi_overbought"] = (feats["rsi"] > 70).astype(int)
+            feats["rsi_oversold"] = (feats["rsi"] < 30).astype(int)
 
-        # Distance of close to long EMA (stable baseline)
-        feats["ema_dist"] = (df["close"] - feats["ema_long"]) / (feats["ema_long"] + 1e-9)
-        feats["ema_breakout_up"] = (df["close"] > feats["ema_long"]).astype(int)
-        feats["ema_breakout_down"] = (df["close"] < feats["ema_long"]).astype(int)
+        # --- DMA ---
+        elif name == "DMA Crossing":
+            if {"dma_short", "dma_long"}.issubset(df.columns):
+                feats["dma_short"] = df["dma_short"]
+                feats["dma_long"] = df["dma_long"]
+            else:
+                dma_df = indicators.compute_dma_indicators(df, iparams)
+                feats["dma_short"] = dma_df["dma_short"]
+                feats["dma_long"] = dma_df["dma_long"]
+            feats["dma_cross_up"] = (feats["dma_short"] > feats["dma_long"]).astype(int)
+            feats["dma_cross_down"] = (feats["dma_short"] < feats["dma_long"]).astype(int)
+            feats["dma_short_slope"] = feats["dma_short"].diff()
 
-    # --- Support/Resistance ---
-    if params.get("use_sr", True):
-        have_sr = {"nearest_support", "nearest_resistance"}.issubset(df.columns)
-        if have_sr:
-            feats["nearest_support"] = df["nearest_support"]
-            feats["nearest_resistance"] = df["nearest_resistance"]
-        else:
-            sr_df = indicators.compute_sr_indicator(df, params.get("sr_params", params))
-            feats["nearest_support"] = sr_df["nearest_support"]
-            feats["nearest_resistance"] = sr_df["nearest_resistance"]
+        # --- EMA ---
+        elif name == "EMA Breakout":
+            have_both = {"ema_short", "ema_long"}.issubset(df.columns)
+            if have_both:
+                feats["ema_short"] = df["ema_short"]
+                feats["ema_long"] = df["ema_long"]
+            else:
+                ema_df = indicators.compute_ema_indicators(df, iparams)
+                feats["ema_short"] = ema_df["ema_short"]
+                feats["ema_long"] = ema_df["ema_long"]
 
-        feats["dist_support"] = (df["close"] - feats["nearest_support"]) / (df["close"] + 1e-9)
-        feats["dist_resistance"] = (feats["nearest_resistance"] - df["close"]) / (df["close"] + 1e-9)
+            feats["ema_dist"] = (df["close"] - feats["ema_long"]) / (feats["ema_long"] + 1e-9)
+            feats["ema_breakout_up"] = (df["close"] > feats["ema_long"]).astype(int)
+            feats["ema_breakout_down"] = (df["close"] < feats["ema_long"]).astype(int)
+
+        # --- Support/Resistance ---
+        elif name == "S/R Structure":
+            have_sr = {"nearest_support", "nearest_resistance"}.issubset(df.columns)
+            if have_sr:
+                feats["nearest_support"] = df["nearest_support"]
+                feats["nearest_resistance"] = df["nearest_resistance"]
+            else:
+                sr_df = indicators.compute_sr_indicator(df, iparams)
+                feats["nearest_support"] = sr_df["nearest_support"]
+                feats["nearest_resistance"] = sr_df["nearest_resistance"]
+
+            feats["dist_support"] = (df["close"] - feats["nearest_support"]) / (df["close"] + 1e-9)
+            feats["dist_resistance"] = (feats["nearest_resistance"] - df["close"]) / (df["close"] + 1e-9)
 
     # Clean NaNs/infinities introduced by rolling and divisions
     feats = feats.replace([np.inf, -np.inf], np.nan)

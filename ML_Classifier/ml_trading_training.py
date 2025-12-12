@@ -3,7 +3,7 @@ import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from sklearn.metrics import classification_report
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.model_selection import TimeSeriesSplit
 
 from ML_Classifier.ml_trading_features import build_features
@@ -41,12 +41,25 @@ def train_rule_ml_classifier(df: pd.DataFrame, params:dict) ->dict:
     for fold_idx, (train_idx, test_idx) in enumerate(tscv.split(X)):
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
-        
+    
         pipeline.fit(X_train, y_train)
-        y_pred = pipeline.predict(X_test)
-        
-        report = classification_report(y_test, y_pred, output_dict=False, digits = 4)
-        reports.append(report)
+    
+        # --- Apply custom threshold ---
+        probs = pipeline.predict_proba(X_test)[:, 1]  # probability of positive class
+        thresh = float(params.get("threshold", 0.5))
+        y_pred = (probs >= thresh).astype(int)
+    
+        acc = accuracy_score(y_test, y_pred)
+        prec = precision_score(y_test, y_pred, average="weighted", zero_division=0)
+        rec = recall_score(y_test, y_pred, average="weighted", zero_division=0)
+        f1 = f1_score(y_test, y_pred, average="weighted", zero_division=0)
+    
+        reports.append({
+            "accuracy": acc,
+            "precision": prec,
+            "recall": rec,
+            "f1": f1
+        })
         # Optional: print(f"Fold {fold_idx+1}/{n_splits}\n{report}")
     
     # 4) Fit on all data

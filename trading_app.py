@@ -915,7 +915,7 @@ class CandlestickChartFrame(ttk.Frame):
         self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 950, height = 450)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
         
-        self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
+        self.timeframe_options = ["OneMinute", "OneHour", "OneDay", "OneWeek"]
         self.time_interval = "OneDay"
         control_frame = ttk.Frame(self)
         control_frame.grid(row=2, column=0, columnspan=4, sticky="ew")
@@ -925,7 +925,7 @@ class CandlestickChartFrame(ttk.Frame):
             self.grid_columnconfigure(i, weight=1)
             
         self.timeframe_buttons = self.create_segmented_control(
-            control_frame, self.timeframe_options, self.on_timeframe_change
+            control_frame, self.timeframe_options, self.time_interval, self.on_timeframe_change
         )
         self.grid_rowconfigure(1, weight=1)
         
@@ -1038,8 +1038,9 @@ class CandlestickChartFrame(ttk.Frame):
         else:
             self._update_job = None
                
-    def create_segmented_control(self, parent, options, command=None):
-        sg_var = tk.StringVar(value=options[1])
+    def create_segmented_control(self, parent, options, default, command=None):
+        ind = options.index(default) if default in options else 0
+        sg_var = tk.StringVar(value=options[ind])
         style = ttk.Style()
         style.configure("Segmented.TRadiobutton", indicatoron=0, relief="raised")
         style.map("Segmented.TRadiobutton", relief=[("selected", "sunken")])
@@ -1348,6 +1349,12 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         super().__init__(parent, title="Strategy")
         self.controller = controller
         
+        # --- ML Classifier training params ---
+        self.reg_c_var = tk.DoubleVar(value=1.0)
+        self.threshold_var = tk.DoubleVar(value=0.6)
+        self.n_splits_var = tk.IntVar(value=5)
+        self.horizon_var = tk.IntVar(value=3)
+
         # --- Toggle Row ---
         toggle_row = ttk.Frame(self.content)
         toggle_row.pack(fill="x", pady=5)
@@ -1410,53 +1417,62 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         )
         self.indicator_section.pack(fill="x", pady=5)
 
-        # --- Extra Candle Features ---
-        candle_frame = ttk.LabelFrame(ml_frame, text="Extra Candle Features")
-        candle_frame.pack(fill="x", pady=5)
+        btn_row = ttk.Frame(ml_frame)
+        btn_row.pack(pady=5)
 
-        self.candle_feature_vars = {}
-
-        candle_features = {
-            "5-min return": "ret_5m",
-            "5-min volatility": "vol_5m",
-            "15-min volatility": "vol_15m",
-            "10-min momentum": "mom_10m"
-        }
-
-        for label, key in candle_features.items():
-            var = tk.BooleanVar(value=False)
-            self.candle_feature_vars[key] = var
-            ttk.Checkbutton(candle_frame, text=label, variable=var).pack(anchor="w")
+        # --- Parameters button (opens dialog) ---
+        ttk.Button(btn_row, text="P", width=3, bootstyle = INFO, command=self.open_param_dialog).pack(side="left", padx=(0, 5))
 
         # --- Train button ---
-        ttk.Button(ml_frame, text="Train Model", command = self.on_train_model).pack(pady=5)
+        ttk.Button(btn_row, text="Train Model", command=self.on_train_model).pack(side="left")
 
+        # --- Training Results (preloaded with placeholders) ---
+        self.results_frame = ttk.LabelFrame(ml_frame, text="Training Results")
+        self.results_frame.pack(fill="x", pady=5)
+
+        self.result_labels = {}
+        metric_keys = ["Accuracy", "Precision", "Recall", "F1"]
+
+        for i in range(0, len(metric_keys), 2):
+            row = ttk.Frame(self.results_frame)
+            row.pack(anchor="center", pady=2)
+
+            for key in metric_keys[i:i+2]:
+                label = ttk.Label(row, text=f"{key}: ---", width=15, anchor="w")
+                label.pack(side="left", padx=10)
+                self.result_labels[key.lower()] = label
+    
     def on_train_model(self):
-        # Collect indicator strategies
-        selected_indicators = []
+        indicators_with_params = []
         if hasattr(self, "indicator_section"):
-            selected_indicators.append(self.indicator_section.combo.get())
-            # You could also loop through list_frame children if multiple strategies are added
-
-        # Collect candle features
-        candle_params = {key: var.get() for key, var in self.candle_feature_vars.items()}
-
-        # Build params dict
+            indicators_with_params = self.indicator_section.serialize()
+    
         params = {
-            "indicators": selected_indicators,
-            "extra_candle_features": candle_params
+            "indicators": indicators_with_params,
+            "regularization_C": self.reg_c_var.get(),
+            "threshold": self.threshold_var.get(),
+            "n_splits": self.n_splits_var.get(),
+            "horizon": self.horizon_var.get()
         }
-
+    
         try:
             df = pd.DataFrame(self.controller.frames[TradingStrategyFrame].search(show_output=False))
-            model = train_rule_ml_classifier(df, params)  # your ML training function
-            self.show_training_status("Training complete ✅")
+            model = train_rule_ml_classifier(df, params)
+    
+            if model.get("validation_reports"):
+                metrics = {}
+                for k in ["accuracy", "precision", "recall", "f1"]:
+                    metrics[k] = sum(r[k] for r in model["validation_reports"]) / len(model["validation_reports"])
+                self.show_training_results(metrics)
+    
         except Exception as e:
-            self.show_training_status(f"Training failed: {e}")
-
-    def show_training_status(self, msg):
-        status_label = ttk.Label(self.dynamic_frame, text=msg, foreground="green")
-        status_label.pack(pady=5)
+            print(f"Training failed: {e}")
+    
+    def show_training_results(self, metrics):
+        for k, v in metrics.items():
+            label = self.result_labels.get(k.lower())
+            if label:
+                label.config(text=f"{k.capitalize()}: {v:.4f}")
         
     def switch_mode(self, event=None):
         mode = self.mode_var.get()
@@ -1473,6 +1489,25 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             "EMA Breakout": {"short_window": 20, "long_window": 50}
         }
         return default_params.get(name, {})
+    
+    def open_param_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Training Parameters")
+        dialog.grab_set()  # modal
+
+        ttk.Label(dialog, text="Regularization (C):").pack(anchor="w", padx=10, pady=5)
+        ttk.Entry(dialog, textvariable=self.reg_c_var, width=10).pack(anchor="w", padx=10)
+
+        ttk.Label(dialog, text="Threshold:").pack(anchor="w", padx=10, pady=5)
+        ttk.Entry(dialog, textvariable=self.threshold_var, width=10).pack(anchor="w", padx=10)
+
+        ttk.Label(dialog, text="Splits:").pack(anchor="w", padx=10, pady=5)
+        ttk.Entry(dialog, textvariable=self.n_splits_var, width=10).pack(anchor="w", padx=10)
+
+        ttk.Label(dialog, text="Horizon:").pack(anchor="w", padx=10, pady=5)
+        ttk.Entry(dialog, textvariable=self.horizon_var, width=10).pack(anchor="w", padx=10)
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=10)
         
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
