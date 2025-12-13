@@ -4,40 +4,81 @@ import trading_indicators as indicators
 
 def build_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
-    Constructs a feature matrix using OHLCV data and indicators.
-    df: DataFrame with columns ['open', 'high', 'low', 'close', 'volume']
-    params: dictionary controlling which features to include
-    Returns: DataFrame with engineered features.
+    Feature builder with:
+    - Leakage-safe alignment (shifted features)
+    - ATR-normalized candle microstructure
+    - Log-return volatility context
+    - Robust EWM volume z-score
+    - Optional intraday cyclical time features
     """
+    EPS = 1e-8
     feats = pd.DataFrame(index=df.index)
-    # 1-minute return: how much the price changed in the last minute
-    feats["ret_1m"] = df["close"].pct_change()
-    # High-low range relative to previous close: measures volatility in 1-minute
-    feats["hl_range"] = (df["high"] - df["low"]) / df["close"].shift(1)
-    # Candle body size: absolute difference between open and close
-    feats["body"] = (df["close"] - df["open"]).abs()
-    # Upper wick: distance rom higher of open/close to the high
-    feats["upper_wick"] = (df["high"] - df[["open", "close"]].max(axis=1)).clip(lower=0)
-    # Lower wick: distance from lower of open/close to the low
-    feats["lower_wick"] = (df[["open", "close"]].min(axis=1) - df["low"]).clip(lower=0)
-    # Ratios: wick size relative to body size (helps detect doji candles, long wicks, etc.)
-    feats["upper_wick_ratio"] = feats["upper_wick"] / (feats["body"] + 1e-9)
-    feats["lower_wick_ratio"] = feats["lower_wick"] / (feats["body"] + 1e-9)
-    # Volume z-score: how unusual is the volume compared to the last 60 minutes
-    feats["volume_z"] = (df["volume"]- df["volume"].rolling(60).mean()) / (df["volume"].rolling(60).std() + 1e-9)
-    
-    # Indicator features
+
+    # Core returns and ranges
+    feats["ret_1m_log"] = np.log(df["close"]).diff()  # additive, stable vs pct_change
+    feats["hl_range_pct"] = (df["high"] - df["low"]) / (df["close"].shift(1) + EPS)
+
+    # True range and ATR normalization (robust size scaling)
+    tr = pd.concat([
+        (df["high"] - df["low"]),
+        (df["high"] - df["close"].shift(1)).abs(),
+        (df["low"]  - df["close"].shift(1)).abs()
+    ], axis=1).max(axis=1)
+    atr_w = int(params.get("atr_window", 14))
+    atr = tr.rolling(atr_w, min_periods=atr_w).mean()
+
+    # Candle microstructure (absolute and ATR-normalized)
+    body_abs = (df["close"] - df["open"]).abs()
+    feats["body_abs"] = body_abs
+    feats["body_atr"] = body_abs / (atr + EPS)
+
+    upper_anchor = df[["open", "close"]].max(axis=1)
+    lower_anchor = df[["open", "close"]].min(axis=1)
+    upper_wick = (df["high"] - upper_anchor).clip(lower=0)
+    lower_wick = (lower_anchor - df["low"]).clip(lower=0)
+
+    feats["upper_wick_ratio"] = upper_wick / (body_abs + EPS)
+    feats["lower_wick_ratio"] = lower_wick / (body_abs + EPS)
+    feats["upper_wick_atr"]   = upper_wick / (atr + EPS)
+    feats["lower_wick_atr"]   = lower_wick / (atr + EPS)
+
+    # Volume context (robust EWM z-score)
+    span = int(params.get("vol_span", 60))
+    vol_mean = df["volume"].ewm(span=span, min_periods=10, adjust=False).mean()
+    vol_std  = df["volume"].ewm(span=span, min_periods=10, adjust=False).std()
+    feats["volume_z"] = ((df["volume"] - vol_mean) / (vol_std + EPS)).clip(-5, 5)
+
+    # Indicator features passthrough
     ind_feats = add_indicator_features(df, params)
     feats = pd.concat([feats, ind_feats], axis=1)
-    
-    # Rolling context
+
+    # Rolling context (log-volatility and ATR-normalized momentum)
     if params.get("extra_candle_features", True):
-        feats["ret_5m"] = df["close"].pct_change(5)
-        feats["vol_5m"] = df["close"].pct_change().rolling(5).std()
-        feats["vol_15m"] = df["close"].pct_change().rolling(15).std()
-        feats["mom_10m"] = df["close"].diff(10)
-        
-    # Final cleanup
+        feats["ret_5m_log"]   = np.log(df["close"]).diff(5)
+        logret_1m            = np.log(df["close"]).diff()
+        feats["vol_5m_log"]  = logret_1m.rolling(5).std()
+        feats["vol_15m_log"] = logret_1m.rolling(15).std()
+        feats["mom_10m_atr"] = (df["close"] - df["close"].shift(10)) / (atr + EPS)
+
+        # Volatility regime percentile (min-max proxy, leak-safe)
+        win = int(params.get("regime_window", 240))
+        v = feats["vol_15m_log"]
+        v_min = v.rolling(win, min_periods=win).min()
+        v_max = v.rolling(win, min_periods=win).max()
+        feats["vol_regime_pct"] = ((v - v_min) / (v_max - v_min + EPS)).clip(0, 1)
+
+    # Optional intraday cyclical time features (for equities; default 390 minutes)
+    if params.get("add_time_cycles", False):
+        session_minutes = int(params.get("session_minutes", 390))
+        minute_of_day = df.index.hour * 60 + df.index.minute
+        angle = 2 * np.pi * (minute_of_day % session_minutes) / max(session_minutes, 1)
+        feats["tod_sin"] = np.sin(angle)
+        feats["tod_cos"] = np.cos(angle)
+
+    # Leakage-safe alignment: use only completed candle info for next decision
+    feats = feats.shift(1)
+
+    # Cleanup
     feats = feats.replace([np.inf, -np.inf], np.nan).dropna()
     return feats
 
