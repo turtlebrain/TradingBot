@@ -1,4 +1,5 @@
 import trading_indicators as indicators
+from ML_Classifier.ml_trading_inference import predict_rule_ml_classifier
 import pandas as pd
 import numpy as np
 
@@ -108,6 +109,29 @@ def support_resistance_structure(data: pd.DataFrame, params: dict) -> pd.DataFra
 
     signals['positions'] = signals['signal'].cumsum()
     return signals
+
+def ml_signals(data: pd.DataFrame, trained: dict, params: dict) -> pd.DataFrame:
+    if data is None or data.empty:
+        return pd.DataFrame(index=data.index if data is not None else [])
+
+    out = predict_rule_ml_classifier(data, trained, params)
+
+    signals = pd.DataFrame(index=data.index)
+    signals["price"] = data["close"]
+    signals["high"] = data["high"]
+    signals["low"] = data["low"]
+    
+    # Add classifier outputs aligned by index
+    signals = signals.join(out[["prob_up", "prob_down", "long_signal", "sell_signal"]], how="left")
+    
+    signals["signal"] = 0
+    signals.loc[signals["long_signal"] == 1, "signal"] = 1
+    signals.loc[signals["sell_signal"] == 1, "signal"] = -1
+    
+    signals["positions"] = signals["signal"].cumsum()
+
+    return signals
+
 
 # Map of strategy names to their corresponding methods
 trading_strategies = {

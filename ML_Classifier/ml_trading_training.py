@@ -68,6 +68,7 @@ def train_rule_ml_classifier(df: pd.DataFrame, params:dict) ->dict:
     # 5) Package results
     result = {
         "pipeline": pipeline,
+        "indicators": params.get("indicators", []),
         "feature_columns": list(X.columns),
         "validation_reports": reports,
         "decision_threshold": float(params.get("threshold", 0.6)),

@@ -774,15 +774,28 @@ class TradingStrategyFrame(ttk.Frame):
 
     
     def run_strategy(self):
-        if self.top_tabs.get_active_chart().live_switch_var.get():
-            # --- LIVE MODE ---
+        is_live = self.top_tabs.get_active_chart().live_switch_var.get()
+        strategy_tab = self.top_tabs.get_active_strategy_tab()
+
+        if strategy_tab.mode_var.get() == "ML Classifier" and hasattr(strategy_tab, "ml_model_result"):
+            buy_logic = lambda df: strategies.ml_signals(df, strategy_tab.ml_model_result, strategy_tab.ml_model_result)
+            sell_logic = None  # adapter ignores sell_logic in ML mode
+
+            buy_strategy = {"type": "ml_classifier",
+                            "threshold": strategy_tab.ml_model_result.get("decision_threshold", 0.5)}
+            sell_strategy = {"type": "ml_classifier"}
+        else:
+            buy_logic = strategy_tab.buy_section
+            sell_logic = strategy_tab.sell_section
+            buy_strategy = buy_logic
+            sell_strategy = sell_logic       
+        
+        if is_live:
             if not hasattr(self, "_live_running") or not self._live_running:
                 acc_id = int(self.active_account.name)
                 candles = self.top_tabs.get_active_chart().candle_aggregator
-                buy_strategy = self.top_tabs.get_active_strategy_tab().buy_section
-                sell_strategy = self.top_tabs.get_active_strategy_tab().sell_section
                 stock_symbol = candles.symbol
-                # Start live strategy
+
                 session_id = persist.start_trade_session(acc_id, stock_symbol, "live", buy_strategy, sell_strategy)
                 self.current_session_id = session_id
 
@@ -796,17 +809,13 @@ class TradingStrategyFrame(ttk.Frame):
                         backtest_frame.backtest_results = pd.concat(
                             [backtest_frame.backtest_results, trade_df]
                         )
-                    # uncomment to update backtest frame live (may slow down UI)
-                    # backtest_frame.results_chart.results = backtest_frame.backtest_results
-                    # backtest_frame.results_chart.update_chart()
-                    # backtest_frame.render_trade_history()
                     self.render_positions_table()
                     self.update_account_info()
 
                 self._finalize_live = engine.run_live_strategy(
                     candle_source=candles,
-                    buy_logic=buy_strategy,
-                    sell_logic=sell_strategy,
+                    buy_logic=buy_logic,
+                    sell_logic=sell_logic,
                     position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                     position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
                     stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
@@ -816,16 +825,14 @@ class TradingStrategyFrame(ttk.Frame):
                     fee_rate=float(self.top_tabs.get_active_execution_tab().fee_rate_input.get().strip()),
                     fee_min=float(self.top_tabs.get_active_execution_tab().minimum_fee_input.get().strip()),
                     lot_size=int(self.top_tabs.get_active_execution_tab().lot_size_input.get().strip()),
-                    account_id = acc_id,
+                    account_id=acc_id,
                     session_id=session_id,
                     ui_callback=_on_live_update,
                 )
 
                 self._live_running = True
                 self.run_strategy_button.config(text="Stop Strategy")
-
             else:
-                # Stop live strategy
                 acc_id = int(self.active_account.name)
                 final_df = self._finalize_live()
                 persist.end_trade_session(session_id=self.current_session_id)
@@ -836,13 +843,10 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.update_chart()
                 backtest_frame.render_trade_history()
 
-                # Update cash and realized P&L from final_df
                 last_cash = float(final_df["cash"].iloc[-1])
                 self.cash_var.set(last_cash)
 
-                # realized_pnl column is tracked in account state
                 last_realized = float(final_df["pnl"].cumsum().iloc[-1]) if "pnl" in final_df.columns else 0.0
-
                 persist.update_account(
                     account_id=acc_id,
                     cash=last_cash,
@@ -854,19 +858,17 @@ class TradingStrategyFrame(ttk.Frame):
                 self._live_running = False
                 self.run_strategy_button.config(text="Run Strategy")
                 del self._finalize_live
-
         else:
-            # --- BACKTEST MODE ---
             acc_id = int(self.active_account.name)
-            stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip() 
-            buy_strategy = self.top_tabs.get_active_strategy_tab().buy_section
-            sell_strategy = self.top_tabs.get_active_strategy_tab().sell_section
-            session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest",buy_strategy, sell_strategy)
+            stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip()
+
+            session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest", buy_strategy, sell_strategy)
             candle_data = pd.DataFrame(self.search(show_output=False))
+
             backtest_results = engine.backtest_strategy(
                 data=candle_data,
-                buy_logic=buy_strategy,
-                sell_logic=sell_strategy,
+                buy_logic=buy_logic,
+                sell_logic=sell_logic,
                 position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                 position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
                 stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
@@ -878,6 +880,7 @@ class TradingStrategyFrame(ttk.Frame):
                 lot_size=int(self.top_tabs.get_active_execution_tab().lot_size_input.get().strip()),
                 session_id=session_id,
             )
+
             if not backtest_results.empty:
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
                 backtest_frame.backtest_results = backtest_results
@@ -885,7 +888,9 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.results = backtest_results
                 backtest_frame.results_chart.update_chart()
                 backtest_frame.render_trade_history()
+
             persist.end_trade_session(session_id=session_id)
+
    
 class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -1354,6 +1359,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.threshold_var = tk.DoubleVar(value=0.6)
         self.n_splits_var = tk.IntVar(value=5)
         self.horizon_var = tk.IntVar(value=3)
+        self.ml_model_result = None
 
         # --- Toggle Row ---
         toggle_row = ttk.Frame(self.content)
@@ -1464,6 +1470,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 for k in ["accuracy", "precision", "recall", "f1"]:
                     metrics[k] = sum(r[k] for r in model["validation_reports"]) / len(model["validation_reports"])
                 self.show_training_results(metrics)
+                self.ml_model_result = model
     
         except Exception as e:
             print(f"Training failed: {e}")

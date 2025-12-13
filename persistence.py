@@ -133,8 +133,25 @@ def delete_account(account_id):
 # --- Trading file i/o ---
 def start_trade_session(account_id, symbol, stream_type="live",
                         buy_strategy=None, sell_strategy=None):
-    buy_json = json.dumps(buy_strategy.serialize()) if buy_strategy else None
-    sell_json = json.dumps(sell_strategy.serialize()) if sell_strategy else None
+    """
+    Start a trade session and persist strategy definitions.
+    Handles both indicator-based StrategySection objects and ML callables/dicts.
+    """
+
+    def _serialize_strategy(strategy):
+        if strategy is None:
+            return None
+        # ML marker dict
+        if isinstance(strategy, dict) and strategy.get("type") == "ml_classifier":
+            return json.dumps(strategy)
+        # Indicator StrategySection
+        if hasattr(strategy, "serialize") and callable(strategy.serialize):
+            return json.dumps(strategy.serialize())
+        # Fallback
+        return json.dumps({"repr": str(strategy)})
+
+    buy_json = _serialize_strategy(buy_strategy)
+    sell_json = _serialize_strategy(sell_strategy)
 
     with get_connection() as conn:
         cur = conn.cursor()
