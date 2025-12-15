@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-import trading_strategies
+import trading_strategies as strategies
 
 
 def normalize_for_side(signal: pd.Series, side: str) -> pd.Series:
@@ -31,7 +31,7 @@ def combine_series(a: pd.Series, b: pd.Series, op: str, side: str) -> pd.Series:
 def evaluate_node(node: dict, data: pd.DataFrame, side: str) -> pd.DataFrame:
     series_name = f"{side}_signal"
     if node["type"] == "strategy":
-        func = trading_strategies.TradingStrategy.trading_strategies.get(node["name"])
+        func = strategies.trading_strategies.get(node["name"])
         if func is None:
             data[series_name] = 0
             return data

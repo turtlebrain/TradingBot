@@ -23,11 +23,15 @@ import strategy_tree_builder as stb
 import persistence as persist
 import tick_processor
 import queue
+from ML_Classifier.ml_trading_training import train_rule_ml_classifier
+import ML_Classifier.ml_trading_persistence as ml_persist
 
 
 class TradingBotApp:
     def __init__(self, root):
         self.root = root
+        style = ttkb.Style("flatly") 
+        style.master = root         
         self.root.title("TradingBot")
         self.root.geometry("1440x900")
         self.system_running = False
@@ -270,7 +274,7 @@ class AccountManagerFrame(ttk.Frame):
         
         self.render_accounts()
         
-        ttk.Button(self, text="➕ New Account", width=25, bootstyle=SUCCESS, command=self.create_account).pack(pady=10)
+        ttk.Button(self, text="New Account", width=25, bootstyle=INFO, command=self.create_account).pack(pady=10)
     
     def render_accounts(self):
         for widget in self.list_frame.winfo_children():
@@ -291,7 +295,7 @@ class AccountManagerFrame(ttk.Frame):
             name_lbl = ttk.Label(row, text=meta["name"], font=("Poppins", 12, "bold"))
             created_lbl = ttk.Label(row, text=f"Created: {meta['date_created']}", foreground="gray")
             opened_lbl = ttk.Label(row, text=f"Last opened: {meta['last_opened']}", foreground="gray")
-            rename_btn = ttk.Button(row, text="Rename", width = 8, bootstyle=INFO, command=lambda n=meta.name: self.rename_account(n))
+            rename_btn = ttk.Button(row, text="Rename", width = 8, command=lambda n=meta.name: self.rename_account(n))
             delete_btn = ttk.Button(row, text="Delete", width = 8, bootstyle=DANGER, command=lambda n=meta.name: self.delete_account(n))
 
             name_lbl.pack(side="left")
@@ -375,7 +379,7 @@ class AccountDialog:
         self.capital_entry = ttk.Entry(top)
         self.capital_entry.pack(padx=5, pady=5)
 
-        ttk.Button(top, text="Create", command=self.on_ok, bootstyle=SUCCESS).pack(padx=10, pady=10)
+        ttk.Button(top, text="Create", command=self.on_ok).pack(padx=10, pady=10)
 
         self.result = None
 
@@ -430,11 +434,11 @@ class TabbedWorkspaceFrame(ttk.Frame):
         workspace.rowconfigure(0, weight=1)
 
         # Sidebar Notebook
-        notebook = ttk.Notebook(workspace, style="TNotebook")
+        notebook = ttk.Notebook(workspace, width = 255, style="TNotebook")
         notebook.grid(row=0, column=0, sticky="ns")
 
         general_tab = GeneralInfoCollapsibleFrame(notebook, self.controller)
-        strategy_tab = StrategyCollapsibleFrame(notebook)
+        strategy_tab = StrategyCollapsibleFrame(notebook, self.controller)
         execution_tab = ExecutionCollasibleFrame(notebook)
 
         notebook.add(general_tab, text="General")
@@ -443,7 +447,7 @@ class TabbedWorkspaceFrame(ttk.Frame):
 
         # Chart
         chart = CandlestickChartFrame(workspace, self.controller)
-        chart.grid(row=0, column=1, sticky="nsew", padx=10, pady=10)
+        chart.grid(row=0, column=1, sticky="nsew", padx=5, pady=5)
 
         tab_widget = self._create_tab_widget(label, closable)
         self.workspaces.append((workspace, tab_widget, chart, general_tab, strategy_tab, execution_tab))
@@ -571,7 +575,7 @@ class TradingStrategyFrame(ttk.Frame):
 
         # --- Bottom row: account info + positions ---
         account_group = ttkb.LabelFrame(self, text="Account Info", bootstyle="info")
-        account_group.grid(row=1, column=0, sticky="nsew", padx=10, pady=10)
+        account_group.grid(row=1, column=0, sticky="nsew", padx=10, pady=5)
 
         # Label bound to cash_var
         self.pnl_var = tk.StringVar(value=f"${self.cash_var.get():,.2f} Cash")
@@ -581,19 +585,19 @@ class TradingStrategyFrame(ttk.Frame):
             bootstyle="info",
             font=("Helvetica", 16, "bold")
         )
-        pnl_label.pack(pady=(10, 5))
+        pnl_label.pack(pady=(5, 5))
 
         # Meter (values updated in update_account_info)
         self.pnl_meter = ttkb.Meter(
             master=account_group,
-            metersize=200,
+            metersize=245,
             amountused=0,
             amounttotal=1,
             metertype="semi",
             bootstyle="secondary",
             subtext="N/A"
         )
-        self.pnl_meter.pack(pady=10)
+        self.pnl_meter.pack()
 
         # Positions container (unchanged)
         positions_container = ttk.Frame(self)
@@ -771,15 +775,28 @@ class TradingStrategyFrame(ttk.Frame):
 
     
     def run_strategy(self):
-        if self.top_tabs.get_active_chart().live_switch_var.get():
-            # --- LIVE MODE ---
+        is_live = self.top_tabs.get_active_chart().live_switch_var.get()
+        strategy_tab = self.top_tabs.get_active_strategy_tab()
+
+        if strategy_tab.mode_var.get() == "ML Classifier" and hasattr(strategy_tab, "ml_model_result"):
+            buy_logic = lambda df: strategies.ml_signals(df, strategy_tab.ml_model_result, strategy_tab.ml_model_result)
+            sell_logic = None  # adapter ignores sell_logic in ML mode
+
+            buy_strategy = {"type": "ml_classifier",
+                            "threshold": strategy_tab.ml_model_result.get("decision_threshold", 0.5)}
+            sell_strategy = {"type": "ml_classifier"}
+        else:
+            buy_logic = strategy_tab.buy_section
+            sell_logic = strategy_tab.sell_section
+            buy_strategy = buy_logic
+            sell_strategy = sell_logic       
+        
+        if is_live:
             if not hasattr(self, "_live_running") or not self._live_running:
                 acc_id = int(self.active_account.name)
                 candles = self.top_tabs.get_active_chart().candle_aggregator
-                buy_strategy = self.top_tabs.get_active_strategy_tab().buy_section
-                sell_strategy = self.top_tabs.get_active_strategy_tab().sell_section
                 stock_symbol = candles.symbol
-                # Start live strategy
+
                 session_id = persist.start_trade_session(acc_id, stock_symbol, "live", buy_strategy, sell_strategy)
                 self.current_session_id = session_id
 
@@ -793,17 +810,13 @@ class TradingStrategyFrame(ttk.Frame):
                         backtest_frame.backtest_results = pd.concat(
                             [backtest_frame.backtest_results, trade_df]
                         )
-                    # uncomment to update backtest frame live (may slow down UI)
-                    # backtest_frame.results_chart.results = backtest_frame.backtest_results
-                    # backtest_frame.results_chart.update_chart()
-                    # backtest_frame.render_trade_history()
                     self.render_positions_table()
                     self.update_account_info()
 
                 self._finalize_live = engine.run_live_strategy(
                     candle_source=candles,
-                    buy_logic=buy_strategy,
-                    sell_logic=sell_strategy,
+                    buy_logic=buy_logic,
+                    sell_logic=sell_logic,
                     position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                     position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
                     stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
@@ -813,16 +826,14 @@ class TradingStrategyFrame(ttk.Frame):
                     fee_rate=float(self.top_tabs.get_active_execution_tab().fee_rate_input.get().strip()),
                     fee_min=float(self.top_tabs.get_active_execution_tab().minimum_fee_input.get().strip()),
                     lot_size=int(self.top_tabs.get_active_execution_tab().lot_size_input.get().strip()),
-                    account_id = acc_id,
+                    account_id=acc_id,
                     session_id=session_id,
                     ui_callback=_on_live_update,
                 )
 
                 self._live_running = True
                 self.run_strategy_button.config(text="Stop Strategy")
-
             else:
-                # Stop live strategy
                 acc_id = int(self.active_account.name)
                 final_df = self._finalize_live()
                 persist.end_trade_session(session_id=self.current_session_id)
@@ -833,13 +844,10 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.update_chart()
                 backtest_frame.render_trade_history()
 
-                # Update cash and realized P&L from final_df
                 last_cash = float(final_df["cash"].iloc[-1])
                 self.cash_var.set(last_cash)
 
-                # realized_pnl column is tracked in account state
                 last_realized = float(final_df["pnl"].cumsum().iloc[-1]) if "pnl" in final_df.columns else 0.0
-
                 persist.update_account(
                     account_id=acc_id,
                     cash=last_cash,
@@ -851,19 +859,17 @@ class TradingStrategyFrame(ttk.Frame):
                 self._live_running = False
                 self.run_strategy_button.config(text="Run Strategy")
                 del self._finalize_live
-
         else:
-            # --- BACKTEST MODE ---
             acc_id = int(self.active_account.name)
-            stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip() 
-            buy_strategy = self.top_tabs.get_active_strategy_tab().buy_section
-            sell_strategy = self.top_tabs.get_active_strategy_tab().sell_section
-            session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest",buy_strategy, sell_strategy)
+            stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip()
+
+            session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest", buy_strategy, sell_strategy)
             candle_data = pd.DataFrame(self.search(show_output=False))
+
             backtest_results = engine.backtest_strategy(
                 data=candle_data,
-                buy_logic=buy_strategy,
-                sell_logic=sell_strategy,
+                buy_logic=buy_logic,
+                sell_logic=sell_logic,
                 position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                 position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
                 stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
@@ -875,6 +881,7 @@ class TradingStrategyFrame(ttk.Frame):
                 lot_size=int(self.top_tabs.get_active_execution_tab().lot_size_input.get().strip()),
                 session_id=session_id,
             )
+
             if not backtest_results.empty:
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
                 backtest_frame.backtest_results = backtest_results
@@ -882,7 +889,9 @@ class TradingStrategyFrame(ttk.Frame):
                 backtest_frame.results_chart.results = backtest_results
                 backtest_frame.results_chart.update_chart()
                 backtest_frame.render_trade_history()
+
             persist.end_trade_session(session_id=session_id)
+
    
 class CandlestickChartFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -909,10 +918,10 @@ class CandlestickChartFrame(ttk.Frame):
         )
         self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
         
-        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 800, height = 450)
+        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 950, height = 450)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
         
-        self.timeframe_options = ["OneHour", "OneDay", "OneWeek", "OneMonth"]
+        self.timeframe_options = ["OneMinute", "OneHour", "OneDay", "OneWeek"]
         self.time_interval = "OneDay"
         control_frame = ttk.Frame(self)
         control_frame.grid(row=2, column=0, columnspan=4, sticky="ew")
@@ -922,7 +931,7 @@ class CandlestickChartFrame(ttk.Frame):
             self.grid_columnconfigure(i, weight=1)
             
         self.timeframe_buttons = self.create_segmented_control(
-            control_frame, self.timeframe_options, self.on_timeframe_change
+            control_frame, self.timeframe_options, self.time_interval, self.on_timeframe_change
         )
         self.grid_rowconfigure(1, weight=1)
         
@@ -1035,8 +1044,9 @@ class CandlestickChartFrame(ttk.Frame):
         else:
             self._update_job = None
                
-    def create_segmented_control(self, parent, options, command=None):
-        sg_var = tk.StringVar(value=options[1])
+    def create_segmented_control(self, parent, options, default, command=None):
+        ind = options.index(default) if default in options else 0
+        sg_var = tk.StringVar(value=options[ind])
         style = ttk.Style()
         style.configure("Segmented.TRadiobutton", indicatoron=0, relief="raised")
         style.map("Segmented.TRadiobutton", relief=[("selected", "sunken")])
@@ -1321,10 +1331,10 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
 
         self.start_date_input = DateEntry(
             self.content,
-            bootstyle="success",
+            bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.start_date_input.set_date(datetime.date(2025, 9, 1))
+        self.start_date_input.set_date(datetime.date(2025, 10, 1))
         self.start_date_input.pack(fill="x", pady=2)
 
         # End date
@@ -1333,32 +1343,221 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
 
         self.end_date_input = DateEntry(
             self.content,
-            bootstyle="success",
+            bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.end_date_input.set_date(datetime.date(2025, 9, 30))
+        self.end_date_input.set_date(datetime.date(2025, 10, 30))
         self.end_date_input.pack(fill="x", pady=2)
 
 
 class StrategyCollapsibleFrame(CollapsibleFrame):
-    def __init__(self, parent):
-        super().__init__(parent, title="Strategy")   
-        # BUY section 
-        strategy_list = list(strategies.TradingStrategy.trading_strategies.keys())
-        self.buy_section = stb.StrategySection(self.content, title="BUY", strategies = strategy_list, strategy_param_getter = self.get_strategy_params)
+    def __init__(self, parent, controller):
+        super().__init__(parent, title="Strategy")
+        self.controller = controller
+        
+        # --- ML Classifier training params ---
+        self.reg_c_var = tk.DoubleVar(value=1.0)
+        self.threshold_var = tk.DoubleVar(value=0.6)
+        self.n_splits_var = tk.IntVar(value=5)
+        self.horizon_var = tk.IntVar(value=3)
+        self.ml_model_result = None
+
+        # --- Toggle Row ---
+        toggle_row = ttk.Frame(self.content)
+        toggle_row.pack(fill="x", pady=5)
+
+        ttk.Label(toggle_row, text="Strategy Mode:", font="-size 10 -weight bold").pack(side=LEFT, padx=5)
+
+        self.mode_var = tk.StringVar(value="Indicator-Based")  # default
+        self.toggle = ttk.Combobox(toggle_row, values=["Indicator-Based", "ML Classifier"],
+                                   textvariable=self.mode_var, width=20, state="readonly")
+        self.toggle.pack(side=LEFT, padx=5)
+        self.toggle.bind("<<ComboboxSelected>>", self.switch_mode)
+
+        # --- Container for dynamic content ---
+        self.dynamic_frame = ttk.Frame(self.content)
+        self.dynamic_frame.pack(fill="x", pady=5)
+
+        # Initialize with Indicator-Based content
+        self._init_indicator_content()
+
+    def _init_indicator_content(self):
+        # Clear dynamic frame
+        for widget in self.dynamic_frame.winfo_children():
+            widget.destroy()
+
+        strategy_list = list(strategies.trading_strategies.keys())
+
+        # BUY section
+        self.buy_section = stb.StrategySection(
+            self.dynamic_frame,
+            title="BUY",
+            strategies=strategy_list,
+            strategy_param_getter=self.get_strategy_params
+        )
         self.buy_section.pack(fill="x", pady=5)
-        # SELL section  
-        self.sell_section = stb.StrategySection(self.content, title="SELL", strategies = strategy_list, strategy_param_getter = self.get_strategy_params)
+
+        # SELL section
+        self.sell_section = stb.StrategySection(
+            self.dynamic_frame,
+            title="SELL",
+            strategies=strategy_list,
+            strategy_param_getter=self.get_strategy_params
+        )
         self.sell_section.pack(fill="x", pady=5)
+
+    def _init_ml_content(self):
+        # Clear dynamic frame
+        for widget in self.dynamic_frame.winfo_children():
+            widget.destroy()
+
+        ml_frame = ttk.Frame(self.dynamic_frame)
+        ml_frame.pack(fill="x", pady=5)
+
+        # --- Indicator Features ---
+        strategy_list = list(strategies.trading_strategies.keys())
+        self.indicator_section = stb.StrategySection(
+            ml_frame,
+            title="Signals",
+            strategies=strategy_list,
+            strategy_param_getter=self.get_strategy_params
+        )
+        self.indicator_section.pack(fill="x", pady=5)
+
+        btn_row = ttk.Frame(ml_frame)
+        btn_row.pack(pady=5)
+
+        # --- Parameters button (opens dialog) ---
+        ttk.Button(btn_row, text="P", width=3, bootstyle = INFO, command=self.open_param_dialog).pack(side="left", padx=(0, 5))
+
+        # --- Train button ---
+        ttk.Button(btn_row, text="Train Model", command=self.on_train_model).pack(side="left")
+        
+        # --- Model Version Selector ---
+        version_row = ttk.Frame(ml_frame)
+        version_row.pack(fill="x", pady=5)
+
+        ttk.Label(version_row, text="Model Version:", width=12, anchor="w").pack(side="left", padx=(0,5))
+
+        self.version_var = tk.StringVar()
+        self.version_dropdown = ttk.Combobox(
+            version_row,
+            textvariable=self.version_var,
+            state="readonly",
+            width=25
+        )
+        self.version_dropdown.pack(side="left", padx=(0,5))
+        self.version_dropdown.bind("<<ComboboxSelected>>", self.on_version_selected)
+        self.populate_version_selector()
+
+        # --- Training Results (preloaded with placeholders) ---
+        self.results_frame = ttk.LabelFrame(ml_frame, text="Training Results")
+        self.results_frame.pack(fill="x", pady=5)
+
+        self.result_labels = {}
+        metric_keys = ["Accuracy", "Precision", "Recall", "F1"]
+
+        for i in range(0, len(metric_keys), 2):
+            row = ttk.Frame(self.results_frame)
+            row.pack(anchor="center", pady=2)
+
+            for key in metric_keys[i:i+2]:
+                label = ttk.Label(row, text=f"{key}: ---", width=15, anchor="w")
+                label.pack(side="left", padx=10)
+                self.result_labels[key.lower()] = label
     
+    def on_version_selected(self, event=None):
+        selected_version = self.version_var.get()
+        model = ml_persist.load_artifacts(selected_version)
+        self.ml_model_result = model
+
+        reports = self.ml_model_result.get("validation_reports", [])
+        if reports:
+            metrics = {k: sum(r[k] for r in reports) / len(reports)
+                       for k in ["accuracy", "precision", "recall", "f1"]}
+            self.show_training_results(metrics)
+
+    def populate_version_selector(self):
+        """
+        Refresh the model version dropdown with persisted versions.
+        """
+        versions = ml_persist.list_versions()
+        self.version_dropdown["values"] = versions
+        if versions:
+            # Default to latest version
+            self.version_var.set(versions[-1])
+        else:
+            # Clear if no versions exist
+            self.version_var.set("")
+        
+    def on_train_model(self):
+        indicators_with_params = []
+        if hasattr(self, "indicator_section"):
+            indicators_with_params = self.indicator_section.serialize()
+    
+        params = {
+            "indicators": indicators_with_params,
+            "regularization_C": self.reg_c_var.get(),
+            "threshold": self.threshold_var.get(),
+            "n_splits": self.n_splits_var.get(),
+            "horizon": self.horizon_var.get()
+        }
+    
+        try:
+            df = pd.DataFrame(self.controller.frames[TradingStrategyFrame].search(show_output=False))
+            model = train_rule_ml_classifier(df, params)
+    
+            if model.get("validation_reports"):
+                metrics = {}
+                for k in ["accuracy", "precision", "recall", "f1"]:
+                    metrics[k] = sum(r[k] for r in model["validation_reports"]) / len(model["validation_reports"])
+                self.show_training_results(metrics)
+                self.populate_version_selector()
+                self.ml_model_result = model
+    
+        except Exception as e:
+            print(f"Training failed: {e}")
+    
+    def show_training_results(self, metrics):
+        for k, v in metrics.items():
+            label = self.result_labels.get(k.lower())
+            if label:
+                label.config(text=f"{k.capitalize()}: {v:.4f}")
+        
+    def switch_mode(self, event=None):
+        mode = self.mode_var.get()
+        if mode == "Indicator-Based":
+            self._init_indicator_content()
+        else:
+            self._init_ml_content()
+
     def get_strategy_params(self, name):
         default_params = {
-            "DMA Crossover":{ "short_window"   :   20,"long_window"    :   50},
-            "S/R Structure": { "distance"   :   5},
-            "RSI": { "lookback" : 14, "overbought" : 70, "oversold" : 30},
-            "EMA Breakout": { "short_window"   :   20,"long_window"    :   50}
+            "DMA Crossing": {"short_window": 20, "long_window": 50},
+            "S/R Structure": {"distance": 5},
+            "RSI": {"lookback": 14, "overbought": 70, "oversold": 30},
+            "EMA Breakout": {"short_window": 20, "long_window": 50}
         }
         return default_params.get(name, {})
+    
+    def open_param_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Training Parameters")
+        dialog.grab_set()  # modal
+
+        ttk.Label(dialog, text="Regularization (C):").pack(anchor="w", padx=10, pady=5)
+        ttk.Entry(dialog, textvariable=self.reg_c_var, width=10).pack(anchor="w", padx=10)
+
+        ttk.Label(dialog, text="Threshold:").pack(anchor="w", padx=10, pady=5)
+        ttk.Entry(dialog, textvariable=self.threshold_var, width=10).pack(anchor="w", padx=10)
+
+        ttk.Label(dialog, text="Splits:").pack(anchor="w", padx=10, pady=5)
+        ttk.Entry(dialog, textvariable=self.n_splits_var, width=10).pack(anchor="w", padx=10)
+
+        ttk.Label(dialog, text="Horizon:").pack(anchor="w", padx=10, pady=5)
+        ttk.Entry(dialog, textvariable=self.horizon_var, width=10).pack(anchor="w", padx=10)
+
+        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=10)
         
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
@@ -1431,37 +1630,47 @@ class ResultSettingsCollapsibleFrame(CollapsibleFrame):
     def __init__(self, parent, controller, result_headers):
         super().__init__(parent, title="Result Settings")
         self.controller = controller
-        # Track selected series for multi-line plotting
         self.selected_series = []
-        
+
+        # --- Row 0: Selector + Add Button ---
+        selector_row = ttk.Frame(self.content)
+        selector_row.pack(fill="x", pady=5)
+
         self.result_var = tk.StringVar(value=result_headers[0])
-        opt_frame = tk.Frame(self.content, bg="#f0f0f0")
-        opt_frame.grid(row=0, column=0, sticky="ns", padx=5, pady=5)
+        opt = ttk.Combobox(selector_row, values=result_headers,
+                           textvariable=self.result_var, state="readonly", width=25)
+        opt.pack(side="left", padx=5, fill="x", expand=True)
 
-        opt = ttk.Combobox(opt_frame, values=result_headers, textvariable=self.result_var, state="readonly")
-        opt.pack(side="left", fill="x", expand=True)
+        add_btn = ttk.Button(selector_row, text="➕", width=2,
+                             bootstyle=SUCCESS, command=self.add_series)
+        add_btn.pack(side="left", padx=5)
 
-        add_btn = ttk.Button(opt_frame, text="➕", width=2, bootstyle=SUCCESS, command=self.add_series)
-        add_btn.pack(side="left", padx=(5, 0))
+        # --- Row 1: Selected Series List ---
+        self.series_frame = ttk.Frame(self.content)
+        self.series_frame.pack(fill="x", pady=5)
 
-        # Row 1: Selected series list
-        self.series_frame = tk.Frame(self.content, bg="#f0f0f0")
-        self.series_frame.grid(row=1, column=0, sticky="ns", padx=5)
+        # --- Row 2: Result Summary ---
+        summary_frame = ttk.LabelFrame(self.content, text="Summary")
+        summary_frame.pack(fill="x", pady=5)
 
-        # Result summary (Net Profit, Final Equity, %return)
-        self.result_summary = tk.Label(self.content, text ="")
-        self.result_summary.grid(row = 2, column = 0, sticky="ns")
-        results_summary = { 
-            "final_equity"  :   0,
-            "profits"       :   0,
-            "returns"       :   0,
-            "sharpe_ratio"  :   0
+        self.result_summary = ttk.Label(summary_frame, text="", anchor="w", justify="left")
+        self.result_summary.pack(fill="x", padx=5, pady=5)
+
+        results_summary = {
+            "final_equity": 0,
+            "profits": 0,
+            "returns": 0,
+            "sharpe_ratio": 0
         }
-        self.result_summary_var =  self.populate_result_text(results_summary)
-        
-        # Run new test button
-        self.run_new_test_button = ttk.Button(self.content, text="Run New Test", command=self.run_new_test)
-        self.run_new_test_button.grid(row=3, column=0, padx=5, pady=5, sticky="ns")
+        self.result_summary_var = self.populate_result_text(results_summary)
+
+        # --- Row 3: Run New Test Button ---
+        action_row = ttk.Frame(self.content)
+        action_row.pack(fill="x", pady=10)
+
+        self.run_new_test_button = ttk.Button(action_row, text="Run New Test",
+                                              bootstyle=PRIMARY, command=self.run_new_test)
+        self.run_new_test_button.pack(anchor="center")
         
     # --- Series management ---
     def add_series(self):

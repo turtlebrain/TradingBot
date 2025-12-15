@@ -158,8 +158,10 @@ def backtest_strategy(
     if lot_size < 1:
         raise ValueError("lot_size must be at least 1.")
 
-    signals = ste.evaluate_strategy(buy_logic, sell_logic, data)
-    if stop_loss_func is not None:
+    # Unified evaluation
+    signals = evaluate_signals(buy_logic, sell_logic, data)
+    # Optional stop-loss enrichment
+    if stop_loss_func is not None and not signals.empty:
         signals = stop_loss_func(signals)
 
     state = PortfolioState(
@@ -306,9 +308,12 @@ def run_live_strategy(
 
         _seed_existing_position_snapshot(candle_row, symbol)
 
-        signals_df = ste.evaluate_strategy(buy_logic, sell_logic, live_candles)
-        if stop_loss_func:
+        # Unified evaluation
+        signals_df = evaluate_signals(buy_logic, sell_logic, live_candles)
+
+        if stop_loss_func and not signals_df.empty:
             signals_df = stop_loss_func(signals_df)
+
         latest_signals = signals_df.iloc[-1].to_dict() if not signals_df.empty else {}
 
         state, rec = strategy_step(
@@ -323,6 +328,7 @@ def run_live_strategy(
             fee_min=fee_min,
             lot_size=lot_size,
         )
+
 
         if rec is not None:
             trade_records.append(rec)
@@ -379,6 +385,19 @@ def run_live_strategy(
 
     return finalize
 
+def evaluate_signals(buy_logic, sell_logic, data: pd.DataFrame):
+    if callable(buy_logic):
+        signals_df = buy_logic(data)
+        if signals_df is None or signals_df.empty:
+            return pd.DataFrame(index=data.index)
+        return signals_df
+
+    signals_df = ste.evaluate_strategy(buy_logic, sell_logic, data)
+
+    if "buy" in signals_df.columns and "sell" in signals_df.columns:
+        signals_df = signals_df.rename(columns={"buy": "long_signal", "sell": "short_signal"})
+
+    return signals_df
 
 def compute_sharpe_ratio(returns: pd.Series, timeframe: str = "OneDay", annual_rf: float = 0.02) -> float:
     """
