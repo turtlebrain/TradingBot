@@ -24,6 +24,7 @@ import persistence as persist
 import tick_processor
 import queue
 from ML_Classifier.ml_trading_training import train_rule_ml_classifier
+import ML_Classifier.ml_trading_persistence as ml_persist
 
 
 class TradingBotApp:
@@ -1431,6 +1432,23 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 
         # --- Train button ---
         ttk.Button(btn_row, text="Train Model", command=self.on_train_model).pack(side="left")
+        
+        # --- Model Version Selector ---
+        version_row = ttk.Frame(ml_frame)
+        version_row.pack(fill="x", pady=5)
+
+        ttk.Label(version_row, text="Model Version:", width=12, anchor="w").pack(side="left", padx=(0,5))
+
+        self.version_var = tk.StringVar()
+        self.version_dropdown = ttk.Combobox(
+            version_row,
+            textvariable=self.version_var,
+            state="readonly",
+            width=25
+        )
+        self.version_dropdown.pack(side="left", padx=(0,5))
+        self.version_dropdown.bind("<<ComboboxSelected>>", self.on_version_selected)
+        self.populate_version_selector()
 
         # --- Training Results (preloaded with placeholders) ---
         self.results_frame = ttk.LabelFrame(ml_frame, text="Training Results")
@@ -1448,6 +1466,30 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 label.pack(side="left", padx=10)
                 self.result_labels[key.lower()] = label
     
+    def on_version_selected(self, event=None):
+        selected_version = self.version_var.get()
+        model = ml_persist.load_artifacts(selected_version)
+        self.ml_model_result = model
+
+        reports = self.ml_model_result.get("validation_reports", [])
+        if reports:
+            metrics = {k: sum(r[k] for r in reports) / len(reports)
+                       for k in ["accuracy", "precision", "recall", "f1"]}
+            self.show_training_results(metrics)
+
+    def populate_version_selector(self):
+        """
+        Refresh the model version dropdown with persisted versions.
+        """
+        versions = ml_persist.list_versions()
+        self.version_dropdown["values"] = versions
+        if versions:
+            # Default to latest version
+            self.version_var.set(versions[-1])
+        else:
+            # Clear if no versions exist
+            self.version_var.set("")
+        
     def on_train_model(self):
         indicators_with_params = []
         if hasattr(self, "indicator_section"):
@@ -1470,6 +1512,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 for k in ["accuracy", "precision", "recall", "f1"]:
                     metrics[k] = sum(r[k] for r in model["validation_reports"]) / len(model["validation_reports"])
                 self.show_training_results(metrics)
+                self.populate_version_selector()
                 self.ml_model_result = model
     
         except Exception as e:

@@ -8,6 +8,7 @@ from sklearn.model_selection import TimeSeriesSplit
 
 from ML_Classifier.ml_trading_features import build_features
 from ML_Classifier.ml_trading_labels import build_labels
+from ML_Classifier.ml_trading_persistence import save_training_artifacts
 
 def train_rule_ml_classifier(df: pd.DataFrame, params:dict) ->dict:
     """
@@ -75,4 +76,8 @@ def train_rule_ml_classifier(df: pd.DataFrame, params:dict) ->dict:
         "horizon": int(params.get("horizon", 3)),
         "min_move": float(params.get("min_move", 0.0005))
     }
+    # 6) Persist artifacts 
+    version = save_training_artifacts(result)
+    result["version"] = version
+
     return result

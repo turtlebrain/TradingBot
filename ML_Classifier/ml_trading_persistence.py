@@ -25,43 +25,23 @@ def build_paths(version: str) -> Dict[str, str]:
         "schema": os.path.join(base, "feature_schema.json"),
     }
 
-def save_training_artifacts(
-    clf: Any,
-    feature_params: Dict[str, Any],
-    feature_columns: list,
-    notes: Optional[str] = None
-) -> str:
+def save_training_artifacts(result: dict, notes: str = "") -> str:
     """
-    Persist classifier and its feature context.
-    Returns the version string for later retrieval.
+    Persist the full training result package (pipeline, metrics, schema, params).
     """
     ensure_dir()
     version = now_ts()
     paths = build_paths(version)
-
-    # Create versioned subdirectory
     os.makedirs(paths["base"], exist_ok=True)
 
-    # Save model
-    joblib.dump(clf, paths["model"])
+    # Save pipeline separately (joblib handles sklearn objects)
+    joblib.dump(result["pipeline"], paths["model"])
 
-    # Save feature params (what the builder used)
-    with open(paths["feature_params"], "w") as f:
-        json.dump(feature_params, f, indent=2)
-
-    # Save feature schema (columns used in training)
-    with open(paths["schema"], "w") as f:
-        json.dump({"columns": feature_columns}, f, indent=2)
-
-    # Save metadata for audit/selection UI
-    metadata = {
-        "version": version,
-        "created_at": version,
-        "notes": notes or "",
-        "files": {k: v for k, v in paths.items() if k != "base"}
-    }
+    # Save the rest of the result dict (minus pipeline) as JSON
+    result_copy = {k: v for k, v in result.items() if k != "pipeline"}
+    result_copy["notes"] = notes
     with open(paths["metadata"], "w") as f:
-        json.dump(metadata, f, indent=2)
+        json.dump(result_copy, f, indent=2)
 
     return version
 
@@ -74,33 +54,22 @@ def latest_version() -> Optional[str]:
     versions = list_versions()
     return versions[-1] if versions else None
 
-def load_artifacts(version: Optional[str] = None) -> Dict[str, Any]:
-    """
-    Load model + feature context for inference.
-    If version is None, loads the latest.
-    """
-    ensure_dir()
+def load_artifacts(version: Optional[str] = None) -> dict:
     ver = version or latest_version()
     if not ver:
         raise FileNotFoundError("No persisted models found.")
-
     paths = build_paths(ver)
 
-    # Load model
-    clf = joblib.load(paths["model"])
+    # Load pipeline
+    pipeline = joblib.load(paths["model"])
 
-    # Load params + schema
-    with open(paths["feature_params"], "r") as f:
-        feature_params = json.load(f)
-    with open(paths["schema"], "r") as f:
-        schema = json.load(f)
+    # Load metadata
+    with open(paths["metadata"], "r") as f:
+        meta = json.load(f)
 
-    return {
-        "version": ver,
-        "clf": clf,
-        "feature_params": feature_params,
-        "feature_columns": schema["columns"]
-    }
+    # Rebuild result package
+    result = {"pipeline": pipeline, **meta, "version": ver}
+    return result
 
 def align_features_for_inference(feats: "pd.DataFrame", expected_columns: list) -> "pd.DataFrame":
     """
