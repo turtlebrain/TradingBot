@@ -80,7 +80,7 @@ def relative_strength_index(data: pd.DataFrame, params: dict) -> pd.DataFrame:
 
 def support_resistance_structure(data: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
-    Support/Resistance strategy with proper hold state and heuristic breakout check.
+    Support/Resistance strategy with heuristic breakout check.
     """
     signals = pd.DataFrame(index=data.index)
     signals['price'] = data['close']
