@@ -60,13 +60,14 @@ def compute_rsi_indicator(data: pd.DataFrame, params: dict) -> pd.DataFrame:
 def compute_sr_indicator(data: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
     Detect recent support/resistance levels and provide nearest levels per bar.
-    Returns nearest_support and nearest_resistance; optionally last peak/valley arrays.
+    Returns nearest_support and nearest_resistance.
     """
     distance = int(params.get('distance', 20))
 
     highs = data['high']
     lows = data['low']
 
+    # Peaks in highs = resistance, peaks in -lows = support
     res_idx, _ = find_peaks(highs, distance=distance)
     sup_idx, _ = find_peaks(-lows, distance=distance)
 
@@ -83,4 +84,24 @@ def compute_sr_indicator(data: pd.DataFrame, params: dict) -> pd.DataFrame:
     out = pd.DataFrame(index=data.index)
     out['nearest_support'] = nearest_support
     out['nearest_resistance'] = nearest_resistance
+    return out
+
+def compute_vwap_indicator(data: pd.DataFrame, params: dict) -> pd.DataFrame:
+    """
+    Compute VWAP (Volume Weighted Average Price) from OHLCV data.
+    Returns a DataFrame with vwap column.
+
+    Expected columns in `data`:
+        - 'close'
+        - 'volume'
+    """
+
+    out = pd.DataFrame(index=data.index)
+
+    # Cumulative price*volume and cumulative volume
+    pv = (data['close'] * data['volume']).cumsum()
+    v = data['volume'].cumsum()
+
+    out['vwap'] = pv / v
+
     return out
