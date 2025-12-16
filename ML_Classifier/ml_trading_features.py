@@ -122,7 +122,7 @@ def add_indicator_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
             feats["dma_short_slope"] = feats["dma_short"].diff()
 
         # --- EMA ---
-        elif name == "EMA Breakout":
+        elif name == "EMA Break":
             have_both = {"ema_short", "ema_long"}.issubset(df.columns)
             if have_both:
                 feats["ema_short"] = df["ema_short"]
@@ -149,6 +149,25 @@ def add_indicator_features(df: pd.DataFrame, params: dict) -> pd.DataFrame:
 
             feats["dist_support"] = (df["close"] - feats["nearest_support"]) / (df["close"] + 1e-9)
             feats["dist_resistance"] = (feats["nearest_resistance"] - df["close"]) / (df["close"] + 1e-9)
+        
+         # --- VWAP Breakout ---
+        elif name == "VWAP Break":
+            have_vwap = {"vwap"}.issubset(df.columns)
+            if have_vwap:
+                feats["vwap"] = df["vwap"]
+            else:
+                vwap_df = indicators.compute_vwap_indicator(df, iparams)
+                feats["vwap"] = vwap_df["vwap"]
+
+            # breakout confirmation features
+            lookback = int(iparams.get("lookback", 5))
+            feats["recent_high"] = df["high"].rolling(window=lookback).max()
+            feats["recent_low"] = df["low"].rolling(window=lookback).min()
+
+            # relative distances to VWAP and breakout levels
+            feats["dist_vwap"] = (df["close"] - feats["vwap"]) / (df["close"] + 1e-9)
+            feats["dist_recent_high"] = (df["close"] - feats["recent_high"]) / (df["close"] + 1e-9)
+            feats["dist_recent_low"] = (feats["recent_low"] - df["close"]) / (df["close"] + 1e-9) 
 
     # Clean NaNs/infinities introduced by rolling and divisions
     feats = feats.replace([np.inf, -np.inf], np.nan)

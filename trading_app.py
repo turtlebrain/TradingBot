@@ -1360,6 +1360,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.threshold_var = tk.DoubleVar(value=0.6)
         self.n_splits_var = tk.IntVar(value=5)
         self.horizon_var = tk.IntVar(value=3)
+        self.min_move = tk.DoubleVar(value=0.0005)
         self.ml_model_result = None
 
         # --- Toggle Row ---
@@ -1500,7 +1501,8 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             "regularization_C": self.reg_c_var.get(),
             "threshold": self.threshold_var.get(),
             "n_splits": self.n_splits_var.get(),
-            "horizon": self.horizon_var.get()
+            "horizon": self.horizon_var.get(),
+            "min_move": self.min_move.get()
         }
     
         try:
@@ -1557,6 +1559,9 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 
         ttk.Label(dialog, text="Horizon:").pack(anchor="w", padx=10, pady=5)
         ttk.Entry(dialog, textvariable=self.horizon_var, width=10).pack(anchor="w", padx=10)
+        
+        ttk.Label(dialog, text="Min move:").pack(anchor="w", padx=10, pady=5)
+        ttk.Entry(dialog, textvariable=self.min_move, width=10).pack(anchor="w", padx=10)
 
         ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=10)
         
