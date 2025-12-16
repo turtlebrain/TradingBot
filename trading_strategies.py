@@ -80,7 +80,7 @@ def relative_strength_index(data: pd.DataFrame, params: dict) -> pd.DataFrame:
 
 def support_resistance_structure(data: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
-    Support/Resistance strategy with heuristic check for the last bar.
+    Support/Resistance strategy with proper hold state and heuristic breakout check.
     """
     signals = pd.DataFrame(index=data.index)
     signals['price'] = data['close']
@@ -91,23 +91,66 @@ def support_resistance_structure(data: pd.DataFrame, params: dict) -> pd.DataFra
     signals['nearest_support'] = sr_df['nearest_support']
     signals['nearest_resistance'] = sr_df['nearest_resistance']
 
+    # Initialize all signals as hold (0)
     signals['signal'] = 0
-    # Bounce off support
-    signals.loc[signals['price'] > signals['nearest_support'], 'signal'] = 1
-    # Reject resistance
-    signals.loc[signals['price'] < signals['nearest_resistance'], 'signal'] = -1
+
+    # Long if bouncing off support
+    signals.loc[signals['price'] <= signals['nearest_support'], 'signal'] = 1
+
+    # Short if rejecting resistance
+    signals.loc[signals['price'] >= signals['nearest_resistance'], 'signal'] = -1
 
     # --- Heuristic check for the last bar ---
     distance = int(params.get('distance', 20))
     if len(signals) > distance:
         last_i = len(signals) - 1
         window = slice(last_i - distance, last_i)
-        if signals['high'].iloc[last_i] > signals['high'].iloc[window].max():
-            signals.iloc[last_i, signals.columns.get_loc('signal')] = -1
-        elif signals['low'].iloc[last_i] < signals['low'].iloc[window].min():
-            signals.iloc[last_i, signals.columns.get_loc('signal')] = 1
+
+        # Only override if last bar is neutral (0)
+        if signals['signal'].iloc[last_i] == 0:
+            if signals['high'].iloc[last_i] > signals['high'].iloc[window].max():
+                signals.iloc[last_i, signals.columns.get_loc('signal')] = -1
+            elif signals['low'].iloc[last_i] < signals['low'].iloc[window].min():
+                signals.iloc[last_i, signals.columns.get_loc('signal')] = 1
 
     signals['positions'] = signals['signal'].cumsum()
+    return signals
+
+def vwap_breakout_strategy(data: pd.DataFrame, params: dict) -> pd.DataFrame:
+    """
+    VWAP Breakout strategy.
+    Uses compute_vwap_indicator, then applies breakout confirmation logic.
+    """
+    signals = pd.DataFrame(index=data.index)
+    signals['price'] = data['close']
+    signals['high'] = data['high']
+    signals['low'] = data['low']
+    signals['volume'] = data['volume']
+
+    # --- VWAP indicator ---
+    vwap_df = indicators.compute_vwap_indicator(data, params)
+    signals['vwap'] = vwap_df['vwap']
+
+    # --- Parameters ---
+    lookback = int(params.get('lookback', 14))  # breakout window
+
+    # --- Breakout levels ---
+    recent_high = signals['high'].rolling(window=lookback).max()
+    recent_low = signals['low'].rolling(window=lookback).min()
+
+    # --- Raw signal logic ---
+    signals['raw_signal'] = np.where(
+        (signals['price'] > signals['vwap']) & (signals['price'] > recent_high.shift(1)), 1,
+        np.where(
+            (signals['price'] < signals['vwap']) & (signals['price'] < recent_low.shift(1)), -1,
+            0
+        )
+    )
+
+    # --- Trade signal + positions ---
+    signals['signal'] = signals['raw_signal'].diff().fillna(0)
+    signals['positions'] = signals['signal'].cumsum()
+
     return signals
 
 def ml_signals(data: pd.DataFrame, trained: dict, params: dict) -> pd.DataFrame:
@@ -136,7 +179,8 @@ def ml_signals(data: pd.DataFrame, trained: dict, params: dict) -> pd.DataFrame:
 # Map of strategy names to their corresponding methods
 trading_strategies = {
     "DMA Crossing" : double_moving_average_crossover,
-    "EMA Breakout" : exponential_moving_average_breakout,
+    "EMA Break" : exponential_moving_average_breakout,
     "S/R Structure" : support_resistance_structure,
-    "RSI" : relative_strength_index
+    "RSI" : relative_strength_index,
+    "VWAP Break" : vwap_breakout_strategy,
 }

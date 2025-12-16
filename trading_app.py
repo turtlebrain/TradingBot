@@ -1536,7 +1536,8 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             "DMA Crossing": {"short_window": 20, "long_window": 50},
             "S/R Structure": {"distance": 5},
             "RSI": {"lookback": 14, "overbought": 70, "oversold": 30},
-            "EMA Breakout": {"short_window": 20, "long_window": 50}
+            "EMA Break": {"short_window": 20, "long_window": 50},
+            "VWAP Break": {"lookback": 14},
         }
         return default_params.get(name, {})
     
