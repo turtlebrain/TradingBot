@@ -918,7 +918,7 @@ class CandlestickChartFrame(ttk.Frame):
         )
         self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
         
-        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 950, height = 450)
+        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 1075, height = 430)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
         
         self.timeframe_options = ["OneMinute", "OneHour", "OneDay", "OneWeek"]
