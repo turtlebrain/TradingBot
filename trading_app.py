@@ -757,6 +757,11 @@ class TradingStrategyFrame(ttk.Frame):
                 interval= active_chart.time_interval
             )
             candle_data_pd = pd.DataFrame(candle_data)
+            # Normalize timestamp
+            candle_data_pd["timestamp"] = pd.to_datetime(candle_data_pd["start"], utc=True)
+            # Set index
+            candle_data_pd.set_index("timestamp", inplace=True)
+            candle_data_pd.sort_index(inplace=True)
             if show_output:
                 # Plot candlestick chart
                 active_chart.update_chart(candle_data_pd)
@@ -1030,6 +1035,7 @@ class CandlestickChartFrame(ttk.Frame):
     
     def update_chart(self, df, animate_last_only = False):
         self.candle_chart.clear()
+        self.candle_chart.timestamps = list(df.index)
         self.candle_chart.plot(self.convert_data_for_chart(df), 
                                self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip(), animate_last_only)
         

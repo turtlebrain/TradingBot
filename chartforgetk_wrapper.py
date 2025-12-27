@@ -18,7 +18,9 @@ class CandlestickChartNoLabels(CandlestickChart):
         if not all(isinstance(d, tuple) and len(d) == 5 and 
                   all(isinstance(v, (int, float)) for v in d) for d in data):
             raise TypeError("Data must be a list of (index, open, high, low, close) number tuples")
-            
+        
+        # Store timestamps for axis labeling
+        self.timestamps = getattr(self, "timestamps", None)   
         self.data = sorted(data, key=lambda x: x[0])  # Sort by index
         
         # Calculate ranges
@@ -43,6 +45,106 @@ class CandlestickChartNoLabels(CandlestickChart):
         self._animate_candles(animate_last_only=animation_flag)
         self._add_interactive_effects()
 
+    def _draw_axes(self, x_min: float, x_max: float, y_min: float, y_max: float):
+        """Override: draw axes but replace numeric x-ticks with timestamp labels."""
+        # Store ranges
+        self.x_min, self.x_max = x_min, x_max
+        self.y_min, self.y_max = y_min, y_max
+
+        # Draw grid
+        self._draw_grid(x_min, x_max, y_min, y_max)
+
+        # Y-axis (left)
+        self.canvas.create_line(
+            self.padding, self.padding,
+            self.padding, self.height - self.padding,
+            fill=self.style.AXIS_COLOR,
+            width=self.style.AXIS_WIDTH,
+            capstyle=tk.ROUND
+        )
+
+        # X-axis (at y=0 or bottom)
+        y_zero = 0 if y_min <= 0 <= y_max else y_min
+        axis_y = self._data_to_pixel_y(y_zero, y_min, y_max)
+
+        self.canvas.create_line(
+            self.padding, axis_y,
+            self.width - self.padding, axis_y,
+            fill=self.style.AXIS_COLOR,
+            width=self.style.AXIS_WIDTH,
+            capstyle=tk.ROUND
+        )
+
+        # --- NEW: Timestamp-based X-axis labels ---
+        if hasattr(self, "timestamps") and self.timestamps:
+            num_labels = 5
+            step = max(1, len(self.timestamps) // num_labels)
+
+            for i in range(0, len(self.timestamps), step):
+                ts = self.timestamps[i]
+                label = ts.strftime("%Y-%m-%d %H:%M")
+
+                x_pos = self._data_to_pixel_x(i, x_min, x_max)
+
+                self.canvas.create_text(
+                    x_pos,
+                    axis_y + 10,
+                    text=label,
+                    font=("Arial", 10),
+                    fill=self.style.TEXT_SECONDARY,
+                    anchor="n"
+                )
+
+            # Skip numeric x-ticks
+            skip_x_ticks = True
+        else:
+            skip_x_ticks = False
+
+        # Draw ticks (with x-axis optionally skipped)
+        self._draw_ticks(x_min, x_max, y_min, y_max, skip_x_ticks=skip_x_ticks)
+
+        # Title
+        if self.title:
+            self.canvas.create_text(
+                self.width / 2, self.padding / 2,
+                text=self.title,
+                font=self.style.TITLE_FONT,
+                fill=self.style.TEXT,
+                anchor='center'
+            )
+
+        # X label
+        if self.x_label:
+            self.canvas.create_text(
+                self.width / 2, self.height - self.padding / 3,
+                text=self.x_label,
+                font=self.style.LABEL_FONT,
+                fill=self.style.TEXT_SECONDARY,
+                anchor='center'
+            )
+
+        # Y label
+        if self.y_label:
+            self.canvas.create_text(
+                self.padding / 3, self.height / 2,
+                text=self.y_label,
+                font=self.style.LABEL_FONT,
+                fill=self.style.TEXT_SECONDARY,
+                anchor='center',
+                angle=90
+            )
+    
+    def _draw_ticks(self, x_min, x_max, y_min, y_max, skip_x_ticks=False):
+        """Override: allow skipping numeric x-ticks when timestamp labels are used."""
+
+        # --- Y-axis ticks (unchanged) ---
+        # keep your existing Y tick logic here
+
+        # --- X-axis ticks (conditionally skipped) ---
+        if not skip_x_ticks:
+            # keep your existing numeric x-tick logic here
+            pass
+        
     def _animate_candles(self, animate_last_only: bool = False):
         """Animate candles. If animate_last_only=True, only the last candle animates.
            Added ability through show_labels to turn on/off high/low labels.

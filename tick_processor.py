@@ -78,12 +78,14 @@ class CandleAggregator:
     def get_candles(self):
         """Return candles as a properly formatted pandas DataFrame."""
         if not self.candles:
-            return pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume"])
-
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    
+        # Convert dict → DataFrame
         df = pd.DataFrame.from_dict(self.candles, orient="index")
-        # Ensure datetime index
-        df.index = pd.to_datetime(df.index)
-        df.index.name = "Date"
-        # Sort by time
-        df = df.sort_index()
+    
+        # Normalize timestamp index
+        df.index = pd.to_datetime(df.index, utc=True)
+        df.index.name = "timestamp"
+        df.sort_index(inplace=True)
+    
         return df
