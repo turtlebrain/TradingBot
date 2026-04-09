@@ -1,6 +1,6 @@
 from ChartForgeTK import CandlestickChart
 from ChartForgeTK import LineChart
-from typing import List, Tuple
+from typing import List, Optional, Union, Tuple, Dict
 import tkinter as tk
 from tkinter import ttk
 
@@ -373,6 +373,180 @@ class LineChartNoLabels(LineChart):
         self.show_labels = show_labels
         self.grid(row=0, column=0, sticky="nsew")
 
+    def plot(self, data: Union[List[float], List[Dict[str, Union[List[float], str]]]], 
+             x_min: Optional[float] = None, x_max: Optional[float] = None, 
+             y_min: Optional[float] = None, y_max: Optional[float] = None):
+        if not data:
+            raise ValueError("Data cannot be empty")
+
+        # Store timestamps for axis labeling
+        self.timestamps = getattr(self, "timestamps", None)   
+        
+        if isinstance(data, list) and all(isinstance(x, (int, float)) for x in data):
+            self.datasets = [{
+                'data': data,
+                'color': self._clamp_color(self.style.ACCENT),
+                'shape': 'circle',
+                'label': 'Line 1'
+            }]
+        else:
+            self.datasets = []
+            for dataset in data:
+                if 'data' not in dataset or not dataset['data']:
+                    raise ValueError("Each dataset must contain non-empty 'data'")
+                if not all(isinstance(x, (int, float)) for x in dataset['data']):
+                    raise TypeError("All data points must be numbers")
+                
+                self.datasets.append({
+                    'data': dataset['data'],
+                    'color': self._clamp_color(dataset.get('color', self.style.ACCENT)),
+                    'shape': dataset.get('shape', 'circle') if dataset.get('shape') in self.shapes else 'circle',
+                    'label': dataset.get('label', f'Line {len(self.datasets) + 1}')
+                })
+
+        all_data = [x for ds in self.datasets for x in ds['data']]
+        full_x_min, full_x_max = 0, max(len(ds['data']) for ds in self.datasets) - 1
+        full_y_min, full_y_max = min(all_data), max(all_data)
+        padding = (full_y_max - full_y_min) * 0.1 or 1
+        full_y_min -= padding
+        full_y_max += padding
+
+        if x_min is None or x_max is None or y_min is None or y_max is None:
+            x_range = (full_x_max - full_x_min) / self.zoom_level
+            y_range = (full_y_max - full_y_min) / self.zoom_level
+            if self.zoom_center_x is None:
+                self.zoom_center_x = (full_x_max + full_x_min) / 2
+            if self.zoom_center_y is None:
+                self.zoom_center_y = (full_y_max + full_y_min) / 2
+            
+            x_min = max(full_x_min, self.zoom_center_x - x_range / 2)
+            x_max = min(full_x_max, self.zoom_center_x + x_range / 2)
+            y_min = max(full_y_min, self.zoom_center_y - y_range / 2)
+            y_max = min(full_y_max, self.zoom_center_y + y_range / 2)
+
+        self.canvas.delete('all')
+        self._draw_axes(x_min, x_max, y_min, y_max)
+
+        # Store pixel coordinates with original data indices
+        self.points = {}
+        for idx, dataset in enumerate(self.datasets):
+            self.points[idx] = []
+            for i, y in enumerate(dataset['data']):
+                if x_min <= i <= x_max and y_min <= y <= y_max:
+                    x = self._data_to_pixel_x(i, x_min, x_max)
+                    y = self._data_to_pixel_y(y, y_min, y_max)
+                    self.points[idx].append((x, y, i))  # Store (x_pixel, y_pixel, data_index)
+
+        self._animate_lines(y_min, y_max)
+        self._add_interactive_effects()
+
+        for bar in self.bars[:]:
+            self.canvas.delete(bar['id'])
+            if bar['label_id']:
+                self.canvas.delete(bar['label_id'])
+            self.add_bar(bar['orientation'], bar['value'], bar['color'], bar['width'], bar['dash'], bar['label'])
+    
+    def _draw_axes(self, x_min: float, x_max: float, y_min: float, y_max: float):
+        """Override: draw axes but replace numeric x-ticks with timestamp labels."""
+        # Store ranges
+        self.x_min, self.x_max = x_min, x_max
+        self.y_min, self.y_max = y_min, y_max
+
+        # Draw grid
+        self._draw_grid(x_min, x_max, y_min, y_max)
+
+        # Y-axis (left)
+        self.canvas.create_line(
+            self.padding, self.padding,
+            self.padding, self.height - self.padding,
+            fill=self.style.AXIS_COLOR,
+            width=self.style.AXIS_WIDTH,
+            capstyle=tk.ROUND
+        )
+
+        # X-axis (at y=0 or bottom)
+        y_zero = 0 if y_min <= 0 <= y_max else y_min
+        axis_y = self._data_to_pixel_y(y_zero, y_min, y_max)
+
+        self.canvas.create_line(
+            self.padding, axis_y,
+            self.width - self.padding, axis_y,
+            fill=self.style.AXIS_COLOR,
+            width=self.style.AXIS_WIDTH,
+            capstyle=tk.ROUND
+        )
+
+        # --- NEW: Timestamp-based X-axis labels ---
+        if hasattr(self, "timestamps") and self.timestamps:
+            num_labels = 5
+            step = max(1, len(self.timestamps) // num_labels)
+
+            for i in range(0, len(self.timestamps), step):
+                ts = self.timestamps[i]
+                label = ts.strftime("%Y-%m-%d %H:%M")
+
+                x_pos = self._data_to_pixel_x(i, x_min, x_max)
+
+                self.canvas.create_text(
+                    x_pos,
+                    axis_y + 10,
+                    text=label,
+                    font=("Arial", 10),
+                    fill=self.style.TEXT_SECONDARY,
+                    anchor="n"
+                )
+
+            # Skip numeric x-ticks
+            skip_x_ticks = True
+        else:
+            skip_x_ticks = False
+
+        # Draw ticks (with x-axis optionally skipped)
+        self._draw_ticks(x_min, x_max, y_min, y_max, skip_x_ticks=skip_x_ticks)
+
+        # Title
+        if self.title:
+            self.canvas.create_text(
+                self.width / 2, self.padding / 2,
+                text=self.title,
+                font=self.style.TITLE_FONT,
+                fill=self.style.TEXT,
+                anchor='center'
+            )
+
+        # X label
+        if self.x_label:
+            self.canvas.create_text(
+                self.width / 2, self.height - self.padding / 3,
+                text=self.x_label,
+                font=self.style.LABEL_FONT,
+                fill=self.style.TEXT_SECONDARY,
+                anchor='center'
+            )
+
+        # Y label
+        if self.y_label:
+            self.canvas.create_text(
+                self.padding / 3, self.height / 2,
+                text=self.y_label,
+                font=self.style.LABEL_FONT,
+                fill=self.style.TEXT_SECONDARY,
+                anchor='center',
+                angle=90
+            )
+    
+    def _draw_ticks(self, x_min, x_max, y_min, y_max, skip_x_ticks=False):
+        """Override: allow skipping numeric x-ticks when timestamp labels are used."""
+
+        # --- Y-axis ticks (unchanged) ---
+        # keep your existing Y tick logic here
+
+        # --- X-axis ticks (conditionally skipped) ---
+        if not skip_x_ticks:
+            # keep your existing numeric x-tick logic here
+            pass
+        
+           
     def _animate_lines(self, y_min: float, y_max: float):
         """Added ability through show_labels to turn on/off labels."""
 
