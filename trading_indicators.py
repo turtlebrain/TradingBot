@@ -105,3 +105,54 @@ def compute_vwap_indicator(data: pd.DataFrame, params: dict) -> pd.DataFrame:
     out['vwap'] = pv / v
 
     return out
+
+def compute_orb_indicator(data: pd.DataFrame, params: dict) -> pd.DataFrame:
+    """
+    Improved Opening Range Breakout (ORB) indicator.
+    Returns orb_high, orb_low, orb_range, orb_breakout_up, orb_breakout_down.
+    """
+
+    ts_col = params.get("timestamp_col", "timestamp")
+    orb_start = params.get("orb_start", "09:30")
+    orb_end = params.get("orb_end", "09:45")
+
+    # Bar times: column if present; else DatetimeIndex (_normalize_candles_to_df uses index only).
+    if ts_col in data.columns:
+        timestamps = pd.to_datetime(data[ts_col])
+    elif isinstance(data.index, pd.DatetimeIndex):
+        timestamps = pd.Series(pd.to_datetime(data.index), index=data.index)
+    else:
+        raise KeyError(
+            f"ORB needs column {ts_col!r} or a DatetimeIndex; "
+            f"columns={list(data.columns)}, index={type(data.index).__name__}"
+        )
+    dates = timestamps.dt.date
+    times = timestamps.dt.time
+
+    start_t = pd.to_datetime(orb_start).time()
+    end_t = pd.to_datetime(orb_end).time()
+
+    # ORB window mask
+    orb_mask = (times >= start_t) & (times <= end_t)
+
+    # Compute ORB high/low per day (robust: skip days with no ORB window)
+    orb_high = data.loc[orb_mask].groupby(dates)["high"].max()
+    orb_low = data.loc[orb_mask].groupby(dates)["low"].min()
+
+    # Map back to full index
+    orb_high_full = pd.Series(dates).map(orb_high)
+    orb_low_full = pd.Series(dates).map(orb_low)
+
+    out = pd.DataFrame(index=data.index)
+    out["orb_high"] = orb_high_full
+    out["orb_low"] = orb_low_full
+    out["orb_range"] = out["orb_high"] - out["orb_low"]
+
+    # Breakout signals (only valid AFTER ORB window)
+    close = data["close"]
+    after_orb = times > end_t
+
+    out["orb_breakout_up"] = ((close > out["orb_high"]) & after_orb).astype(int)
+    out["orb_breakout_down"] = ((close < out["orb_low"]) & after_orb).astype(int)
+
+    return out

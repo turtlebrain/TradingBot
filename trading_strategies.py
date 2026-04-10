@@ -153,6 +153,46 @@ def vwap_breakout_strategy(data: pd.DataFrame, params: dict) -> pd.DataFrame:
 
     return signals
 
+def opening_range_breakout(data: pd.DataFrame, params: dict) -> pd.DataFrame:
+    """
+    Improved ORB strategy with clean breakout logic.
+    """
+
+    signals = pd.DataFrame(index=data.index)
+    signals["price"] = data["close"]
+    signals["high"] = data["high"]
+    signals["low"] = data["low"]
+
+    orb = indicators.compute_orb_indicator(data, params)
+    signals["orb_high"] = orb["orb_high"]
+    signals["orb_low"] = orb["orb_low"]
+    signals["orb_range"] = orb["orb_range"]
+
+    # Initialize
+    signals["signal"] = 0
+
+    # Long breakout
+    signals.loc[orb["orb_breakout_up"] == 1, "signal"] = 1
+
+    # Short breakout
+    signals.loc[orb["orb_breakout_down"] == 1, "signal"] = -1
+
+    # Optional heuristic override (same as SR)
+    distance = int(params.get("distance", 20))
+    if len(signals) > distance:
+        last_i = len(signals) - 1
+        window = slice(last_i - distance, last_i)
+
+        if signals["signal"].iloc[last_i] == 0:
+            if signals["high"].iloc[last_i] > signals["high"].iloc[window].max():
+                signals.iloc[last_i, signals.columns.get_loc("signal")] = 1
+            elif signals["low"].iloc[last_i] < signals["low"].iloc[window].min():
+                signals.iloc[last_i, signals.columns.get_loc("signal")] = -1
+
+    signals["positions"] = signals["signal"].cumsum()
+    return signals
+    
+
 def ml_signals(data: pd.DataFrame, trained: dict, params: dict) -> pd.DataFrame:
     if data is None or data.empty:
         return pd.DataFrame(index=data.index if data is not None else [])
@@ -183,4 +223,5 @@ trading_strategies = {
     "S/R Structure" : support_resistance_structure,
     "RSI" : relative_strength_index,
     "VWAP Break" : vwap_breakout_strategy,
+    "ORB Break" : opening_range_breakout,
 }

@@ -1603,6 +1603,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             "RSI": {"lookback": 14, "overbought": 70, "oversold": 30},
             "EMA Break": {"short_window": 20, "long_window": 50},
             "VWAP Break": {"lookback": 14},
+            "ORB Break": {"orb_start": "09:30", "orb_end": "09:45", "timestamp_col": "timestamp", "distance": 20},
         }
         return default_params.get(name, {})
     
