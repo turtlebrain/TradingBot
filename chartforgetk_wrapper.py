@@ -1,8 +1,62 @@
 from ChartForgeTK import CandlestickChart
 from ChartForgeTK import LineChart
-from typing import List, Optional, Union, Tuple, Dict
+import math
 import tkinter as tk
 from tkinter import ttk
+from typing import List, Optional, Union, Tuple, Dict, Any
+
+def _format_ts_axis_label(ts: Any) -> str:
+    if hasattr(ts, "strftime"):
+        try:
+            return ts.strftime("%Y-%m-%d %H:%M")
+        except (AttributeError, ValueError, OSError):
+            return str(ts)
+    return str(ts)
+
+
+def _draw_chart_ticks(chart, x_min: float, x_max: float, y_min: float, y_max: float, skip_x_ticks: bool = False):
+    """Match ChartForgeTK Chart._draw_ticks: Y labels always; X numeric ticks unless skip_x_ticks."""
+    x_interval = chart._calculate_tick_interval(x_max - x_min)
+    y_interval = chart._calculate_tick_interval(y_max - y_min)
+    y_zero = 0 if y_min <= 0 <= y_max else y_min
+
+    if not skip_x_ticks:
+        x = math.ceil(x_min / x_interval) * x_interval
+        drawn_x_labels = set()
+        while x <= x_max + 1e-10:
+            px = chart._data_to_pixel_x(x, x_min, x_max)
+            py = chart._data_to_pixel_y(y_zero, y_min, y_max)
+            chart.canvas.create_line(
+                px, py, px, py + chart.style.TICK_LENGTH,
+                fill=chart.style.TICK_COLOR, width=chart.style.AXIS_WIDTH, capstyle=tk.ROUND,
+            )
+            label = f"{x:g}"
+            if label not in drawn_x_labels:
+                chart.canvas.create_text(
+                    px, py + chart.style.TICK_LENGTH + 5, text=label,
+                    font=chart.style.AXIS_FONT, fill=chart.style.TEXT_SECONDARY, anchor="n",
+                )
+                drawn_x_labels.add(label)
+            x += x_interval
+
+    y = math.ceil(y_min / y_interval) * y_interval
+    drawn_y_labels = set()
+    while y <= y_max + 1e-10:
+        px = chart.padding
+        py = chart._data_to_pixel_y(y, y_min, y_max)
+        chart.canvas.create_line(
+            px - chart.style.TICK_LENGTH, py, px, py,
+            fill=chart.style.TICK_COLOR, width=chart.style.AXIS_WIDTH, capstyle=tk.ROUND,
+        )
+        label = f"{y/1000:g}k" if abs(y) >= 1000 else f"{y:g}"
+        if label not in drawn_y_labels and abs(py - chart.height / 2) > 10:
+            chart.canvas.create_text(
+                px - chart.style.TICK_LENGTH - 5, py, text=label,
+                font=chart.style.AXIS_FONT, fill=chart.style.TEXT_SECONDARY, anchor="e",
+            )
+            drawn_y_labels.add(label)
+        y += y_interval
+
 
 class CandlestickChartNoLabels(CandlestickChart):
     def __init__(self, *args, show_labels=False, **kwargs):
@@ -78,12 +132,12 @@ class CandlestickChartNoLabels(CandlestickChart):
         # --- NEW: Timestamp-based X-axis labels ---
         if hasattr(self, "timestamps") and self.timestamps:
             num_labels = 5
-            step = max(1, len(self.timestamps) // num_labels)
-
-            for i in range(0, len(self.timestamps), step):
+            n_data = getattr(self, "_plot_point_count", len(self.timestamps))
+            n_ts = min(len(self.timestamps), n_data)
+            step = max(1, n_ts // num_labels) if n_ts else 1
+            for i in range(0, n_ts, step):
                 ts = self.timestamps[i]
-                label = ts.strftime("%Y-%m-%d %H:%M")
-
+                label = _format_ts_axis_label(ts)
                 x_pos = self._data_to_pixel_x(i, x_min, x_max)
 
                 self.canvas.create_text(
@@ -136,15 +190,8 @@ class CandlestickChartNoLabels(CandlestickChart):
     
     def _draw_ticks(self, x_min, x_max, y_min, y_max, skip_x_ticks=False):
         """Override: allow skipping numeric x-ticks when timestamp labels are used."""
+        _draw_chart_ticks(self, x_min, x_max, y_min, y_max, skip_x_ticks=skip_x_ticks)
 
-        # --- Y-axis ticks (unchanged) ---
-        # keep your existing Y tick logic here
-
-        # --- X-axis ticks (conditionally skipped) ---
-        if not skip_x_ticks:
-            # keep your existing numeric x-tick logic here
-            pass
-        
     def _animate_candles(self, animate_last_only: bool = False):
         """Animate candles. If animate_last_only=True, only the last candle animates.
            Added ability through show_labels to turn on/off high/low labels.
@@ -403,6 +450,7 @@ class LineChartNoLabels(LineChart):
                     'shape': dataset.get('shape', 'circle') if dataset.get('shape') in self.shapes else 'circle',
                     'label': dataset.get('label', f'Line {len(self.datasets) + 1}')
                 })
+        self._plot_point_count = max(len(ds['data']) for ds in self.datasets)
 
         all_data = [x for ds in self.datasets for x in ds['data']]
         full_x_min, full_x_max = 0, max(len(ds['data']) for ds in self.datasets) - 1
@@ -479,12 +527,12 @@ class LineChartNoLabels(LineChart):
         # --- NEW: Timestamp-based X-axis labels ---
         if hasattr(self, "timestamps") and self.timestamps:
             num_labels = 5
-            step = max(1, len(self.timestamps) // num_labels)
-
-            for i in range(0, len(self.timestamps), step):
+            n_data = getattr(self, "_plot_point_count", len(self.timestamps))
+            n_ts = min(len(self.timestamps), n_data)
+            step = max(1, n_ts // num_labels) if n_ts else 1
+            for i in range(0, n_ts, step):
                 ts = self.timestamps[i]
-                label = ts.strftime("%Y-%m-%d %H:%M")
-
+                label = _format_ts_axis_label(ts)
                 x_pos = self._data_to_pixel_x(i, x_min, x_max)
 
                 self.canvas.create_text(
@@ -537,16 +585,8 @@ class LineChartNoLabels(LineChart):
     
     def _draw_ticks(self, x_min, x_max, y_min, y_max, skip_x_ticks=False):
         """Override: allow skipping numeric x-ticks when timestamp labels are used."""
+        _draw_chart_ticks(self, x_min, x_max, y_min, y_max, skip_x_ticks=skip_x_ticks)
 
-        # --- Y-axis ticks (unchanged) ---
-        # keep your existing Y tick logic here
-
-        # --- X-axis ticks (conditionally skipped) ---
-        if not skip_x_ticks:
-            # keep your existing numeric x-tick logic here
-            pass
-        
-           
     def _animate_lines(self, y_min: float, y_max: float):
         """Added ability through show_labels to turn on/off labels."""
 

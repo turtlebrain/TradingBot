@@ -173,7 +173,11 @@ def end_trade_session(session_id):
 def insert_trade_stream(session_id, df_stream):
     """Persist an entire DataFrame of trade stream rows for a session."""
     with get_connection() as conn:
-        df_stream.assign(session_id=session_id).to_sql(
+        out = df_stream.copy()
+        # Preserve stream time axis for later charting/history reloads.
+        if "ts" not in out.columns:
+            out["ts"] = pd.to_datetime(out.index, utc=True, errors="coerce")
+        out.assign(session_id=session_id).to_sql(
             "trade_streams", conn, if_exists="append", index=False
         )
 
@@ -186,8 +190,24 @@ def load_trade_sessions(account_id=None):
 
 def load_trade_stream(session_id):
     with get_connection() as conn:
-        return pd.read_sql("SELECT * FROM trade_streams WHERE session_id=? ORDER BY row_id",
-                           conn, params=(session_id,), index_col="row_id")
+        df = pd.read_sql(
+            "SELECT * FROM trade_streams WHERE session_id=? ORDER BY row_id",
+            conn,
+            params=(session_id,),
+        )
+    if df.empty:
+        return df
+    # Prefer persisted candle timestamps; fallback keeps legacy rows working.
+    if "ts" in df.columns:
+        ts = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+        if ts.notna().any():
+            df = df.loc[ts.notna()].copy()
+            df.index = ts[ts.notna()]
+            df.index.name = "timestamp"
+            return df
+    if "row_id" in df.columns:
+        return df.set_index("row_id")
+    return df
 
 # --- Positions file i/o ---
 def update_position(account_id, symbol, quantity, avg_price, current_price=None, unrealized_pnl=None, side=None):

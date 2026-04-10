@@ -35,11 +35,13 @@ class StopLoss:
         # Initialize stop_loss column
         signal_data['stop_loss'] = np.nan
 
-        # Loop and assign using .loc to avoid chained assignment
-        for i in range(1, len(signal_data)):
-            if signal_data.loc[i, 'positions'] > 0:
-                entry_price = signal_data.loc[i, 'price']
-                stop_loss = entry_price - 2 * signal_data.loc[i, 'ATR']
-                signal_data.loc[i, 'stop_loss'] = stop_loss
+        # Position-based loop (index may be DatetimeIndex, not 0..n-1)
+        stop_ix = signal_data.columns.get_loc("stop_loss")
+        for pos in range(1, len(signal_data)):
+            if signal_data["positions"].iloc[pos] > 0:
+                entry_price = signal_data["price"].iloc[pos]
+                atr = signal_data["ATR"].iloc[pos]
+                if pd.notna(atr):
+                    signal_data.iat[pos, stop_ix] = entry_price - 2 * atr
 
         return signal_data

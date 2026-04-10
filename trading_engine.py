@@ -10,6 +10,69 @@ import persistence as persist
 
 engine_tol = 1e-9
 
+
+def _signals_row_at(signals: pd.DataFrame, date) -> dict:
+    """One row as dict; if duplicate labels, use the first row."""
+    if signals.empty or date not in signals.index:
+        return {}
+    sel = signals.loc[date]
+    if isinstance(sel, pd.DataFrame):
+        if sel.empty:
+            return {}
+        sel = sel.iloc[0]
+    elif not isinstance(sel, pd.Series):
+        return {}
+    return sel.to_dict()
+
+
+def _coerce_trade_signal(raw) -> int:
+    """Normalize signal to -1, 0, or 1 (handles duplicate-index rows, nested dicts, lists)."""
+    if raw is None:
+        return 0
+    if isinstance(raw, dict):
+        for key in ("signal", "value", "side"):
+            if key in raw:
+                return _coerce_trade_signal(raw[key])
+        return 0
+    if isinstance(raw, (list, tuple)):
+        return _coerce_trade_signal(raw[0]) if raw else 0
+    if isinstance(raw, np.ndarray):
+        if raw.size == 0:
+            return 0
+        return _coerce_trade_signal(raw.flat[0])
+    if isinstance(raw, (bool, np.bool_)):
+        return int(bool(raw))
+    if isinstance(raw, (int, np.integer)):
+        v = int(raw)
+        return 1 if v > 0 else (-1 if v < 0 else 0)
+    if isinstance(raw, (float, np.floating)):
+        if np.isnan(raw):
+            return 0
+        return 1 if raw > 0 else (-1 if raw < 0 else 0)
+    try:
+        v = float(raw)
+        if np.isnan(v):
+            return 0
+        return 1 if v > 0 else (-1 if v < 0 else 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _scalar_float_from_cell(val, default=np.nan):
+    """Extract one float from a cell (handles duplicate-index list values)."""
+    if isinstance(val, (list, tuple)) and len(val) > 0:
+        return _scalar_float_from_cell(val[0], default)
+    if isinstance(val, np.ndarray) and val.size > 0:
+        return _scalar_float_from_cell(val.flat[0], default)
+    if val is None:
+        return default
+    try:
+        x = float(val)
+        return default if np.isnan(x) else x
+    except (TypeError, ValueError):
+        return default
+
+
 def strategy_step(
     data_row,
     state: PortfolioState,
@@ -23,7 +86,7 @@ def strategy_step(
     lot_size: int
 ) -> tuple[PortfolioState, TradeRecord]:
     price = data_row["close"]
-    signal = signals_row.get("signal", 0)
+    signal = _coerce_trade_signal(signals_row.get("signal", 0))
 
     equity = state.cash + state.shares * price
     fixed_fraction = float(position_sizer_param)
@@ -90,7 +153,9 @@ def strategy_step(
 
         # Update stop-loss if provided by signals
         if "stop_loss" in signals_row:
-            state.stop_loss = signals_row.get("stop_loss", np.nan)
+            state.stop_loss = _scalar_float_from_cell(
+                signals_row.get("stop_loss", np.nan), default=np.nan
+            )
 
     # SELL
     elif order < 0:
@@ -173,7 +238,7 @@ def backtest_strategy(
 
     records = []
     for date, row in data.iterrows():
-        sig_row = signals.loc[date].to_dict() if date in signals.index else {}
+        sig_row = _signals_row_at(signals, date)
         state, rec = strategy_step(
             row, state, sig_row,
             position_sizer_func, position_sizer_param,

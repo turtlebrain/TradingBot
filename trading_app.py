@@ -27,6 +27,50 @@ from ML_Classifier.ml_trading_training import train_rule_ml_classifier
 import ML_Classifier.ml_trading_persistence as ml_persist
 
 
+def _merge_duplicate_index_candles(out: pd.DataFrame) -> pd.DataFrame:
+    """
+    Merge rows that share the same timestamp into one OHLCV bar.
+    open=first, high=max, low=min, close=last, volume=sum (standard overlap semantics).
+    Uses stable sort so first/last follow API/source row order within a timestamp.
+    Other columns use first.
+    """
+    if out.empty or not out.index.has_duplicates:
+        return out
+    out = out.sort_index(kind="mergesort")
+    agg = {}
+    if "open" in out.columns:
+        agg["open"] = "first"
+    if "high" in out.columns:
+        agg["high"] = "max"
+    if "low" in out.columns:
+        agg["low"] = "min"
+    if "close" in out.columns:
+        agg["close"] = "last"
+    if "volume" in out.columns:
+        agg["volume"] = "sum"
+    for c in out.columns:
+        if c not in agg:
+            agg[c] = "first"
+    merged = out.groupby(level=0, sort=True).agg(agg)
+    merged.sort_index(inplace=True)
+    merged.index.name = out.index.name or "timestamp"
+    return merged
+
+
+def _normalize_candles_to_df(candle_list):
+    """Build OHLCV DataFrame with UTC DatetimeIndex from broker get_candles rows."""
+    if not candle_list:
+        return pd.DataFrame()
+    df = pd.DataFrame(candle_list)
+    if "start" not in df.columns:
+        return df
+    out = df.copy()
+    out["timestamp"] = pd.to_datetime(out["start"], utc=True)
+    out.set_index("timestamp", inplace=True)
+    out.sort_index(inplace=True)
+    return _merge_duplicate_index_candles(out)
+
+
 class TradingBotApp:
     def __init__(self, root):
         self.root = root
@@ -756,12 +800,10 @@ class TradingStrategyFrame(ttk.Frame):
                 end=self.top_tabs.get_active_general_tab().end_date_input.get_date(),
                 interval= active_chart.time_interval
             )
-            candle_data_pd = pd.DataFrame(candle_data)
-            # Normalize timestamp
-            candle_data_pd["timestamp"] = pd.to_datetime(candle_data_pd["start"], utc=True)
-            # Set index
-            candle_data_pd.set_index("timestamp", inplace=True)
-            candle_data_pd.sort_index(inplace=True)
+            candle_data_pd = _normalize_candles_to_df(candle_data)
+            if candle_data_pd.empty:
+                print("No data found for:", stock_symbol)
+                return
             if show_output:
                 # Plot candlestick chart
                 active_chart.update_chart(candle_data_pd)
@@ -869,7 +911,12 @@ class TradingStrategyFrame(ttk.Frame):
             stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip()
 
             session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest", buy_strategy, sell_strategy)
-            candle_data = pd.DataFrame(self.search(show_output=False))
+            raw_candles = self.search(show_output=False)
+            candle_data = _normalize_candles_to_df(raw_candles)
+            if candle_data.empty:
+                messagebox.showwarning("Backtest", "No candle data available for the selected range.")
+                persist.end_trade_session(session_id=session_id)
+                return
 
             backtest_results = engine.backtest_strategy(
                 data=candle_data,
@@ -1267,12 +1314,14 @@ class ResultChartFrame(ttk.Frame):
         chart = self.create_chart(show_labels=self.show_label)
         chart.title = self.stock_symbol
         series_list = self.controller.frames[BackTestingResultsFrame].result_settings_tab.selected_series
-
         if series_list:
             datasets = []
-            for series in series_list:
-                if series in self.results.columns:
-                    y_values = pd.to_numeric(self.results[series], errors="coerce").dropna().tolist()
+            cols = [c for c in series_list if c in self.results.columns]
+            if cols:
+                sub = self.results[cols].apply(pd.to_numeric, errors="coerce").dropna(how="any")
+                chart.timestamps = list(sub.index)
+                for series in cols:
+                    y_values = sub[series].tolist()
                     if y_values:
                         datasets.append({
                             'data': y_values,
@@ -1282,8 +1331,11 @@ class ResultChartFrame(ttk.Frame):
             if datasets:
                 chart.plot(datasets)  # ChartForgeTK will handle multi-series mode
         else:
-            y_values = pd.to_numeric(self.results[selected], errors="coerce").dropna().tolist()
+            s = pd.to_numeric(self.results[selected], errors="coerce")
+            valid = s.dropna()
+            y_values = valid.tolist()
             if y_values:
+                chart.timestamps = list(valid.index)
                 chart.plot(y_values)  # single series mode
 
                     
@@ -1331,18 +1383,6 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
         )
         self.search_btn.pack(side="left")
 
-        # Start date
-        self.start_date_label = ttk.Label(self.content, text="Start Date:")
-        self.start_date_label.pack(anchor="w", pady=(5, 2))
-
-        self.start_date_input = DateEntry(
-            self.content,
-            bootstyle="info",
-            dateformat="%Y-%m-%d"
-        )
-        self.start_date_input.set_date(datetime.date(2025, 10, 1))
-        self.start_date_input.pack(fill="x", pady=2)
-
         # End date
         self.end_date_label = ttk.Label(self.content, text="End Date:")
         self.end_date_label.pack(anchor="w", pady=(5, 2))
@@ -1352,8 +1392,21 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
             bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.end_date_input.set_date(datetime.date(2025, 10, 30))
+        self.end_date_input.set_date(datetime.date.today())
         self.end_date_input.pack(fill="x", pady=2)
+
+        # Start date
+        self.start_date_label = ttk.Label(self.content, text="Start Date:")
+        self.start_date_label.pack(anchor="w", pady=(5, 2))
+
+        self.start_date_input = DateEntry(
+            self.content,
+            bootstyle="info",
+            dateformat="%Y-%m-%d"
+        )
+        self.start_date_input.set_date(self.end_date_input.get_date() - datetime.timedelta(days=30))
+        self.start_date_input.pack(fill="x", pady=2)
+
 
 
 class StrategyCollapsibleFrame(CollapsibleFrame):
@@ -1512,7 +1565,11 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         }
     
         try:
-            df = pd.DataFrame(self.controller.frames[TradingStrategyFrame].search(show_output=False))
+            raw = self.controller.frames[TradingStrategyFrame].search(show_output=False)
+            df = _normalize_candles_to_df(raw)
+            if df.empty:
+                messagebox.showwarning("Training", "No candle data available. Run a search first.")
+                return
             model = train_rule_ml_classifier(df, params)
     
             if model.get("validation_reports"):
