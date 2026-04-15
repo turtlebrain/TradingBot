@@ -1,0 +1,14 @@
+perf: speed up run_strategy across all hot-path files
+
+- trading_indicators: replace O(n) Python loop in RSI with vectorized
+  pandas EWM (alpha=1/lookback); fix avg_loss divide-by-zero guard
+- risk_control: replace O(n) Python loop and broken integer .loc on
+  DatetimeIndex in ATR stop-loss with a single np.where vectorized pass
+- trading_engine: pre-convert signals DataFrame to a list of dicts once
+  before the backtest loop, eliminating per-row O(log n) label lookup
+  plus Series.to_dict() allocation on every bar
+- trading_app: run backtest_strategy in a daemon background thread so the
+  UI stays responsive; button shows "Running..." disabled state and all
+  UI updates are scheduled back on the main thread via root.after()
+- persistence: collapse multiple single-column UPDATE queries in
+  update_account into one batched SET statement per call
