@@ -17,6 +17,7 @@ import requests
 import chartforgetk_wrapper as cftk_wrap
 import time
 import datetime
+import calendar
 import threading
 import tick_streamer as qt_stream
 import strategy_tree_builder as stb
@@ -757,8 +758,29 @@ class TradingStrategyFrame(ttk.Frame):
                 interval= active_chart.time_interval
             )
             candle_data_pd = pd.DataFrame(candle_data)
-            # Normalize timestamp
-            candle_data_pd["timestamp"] = pd.to_datetime(candle_data_pd["start"], utc=True)
+            if candle_data_pd.empty:
+                messagebox.showwarning("No Data", "No candle data returned for the selected range.")
+                return
+
+            # Normalize timestamp across broker formats.
+            timestamp_col = None
+            for candidate in ("start", "startTime", "date", "timestamp", "time"):
+                if candidate in candle_data_pd.columns:
+                    timestamp_col = candidate
+                    break
+
+            if timestamp_col is None:
+                messagebox.showerror(
+                    "Data Error",
+                    f"Candle data is missing a timestamp field. Available fields: {list(candle_data_pd.columns)}"
+                )
+                return
+
+            candle_data_pd["timestamp"] = pd.to_datetime(candle_data_pd[timestamp_col], utc=True, errors="coerce")
+            candle_data_pd = candle_data_pd.dropna(subset=["timestamp"])
+            if candle_data_pd.empty:
+                messagebox.showerror("Data Error", "Unable to parse candle timestamps from broker response.")
+                return
             # Set index
             candle_data_pd.set_index("timestamp", inplace=True)
             candle_data_pd.sort_index(inplace=True)
@@ -1335,6 +1357,15 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, title="General")
         self.controller = controller
+        today = datetime.date.today()
+        prev_month = 12 if today.month == 1 else today.month - 1
+        prev_year = today.year - 1 if today.month == 1 else today.year
+        prev_month_last_day = calendar.monthrange(prev_year, prev_month)[1]
+        one_month_prior = datetime.date(
+            prev_year,
+            prev_month,
+            min(today.day, prev_month_last_day)
+        )
         # Stock symbol label
         self.stock_label = ttk.Label(self.content, text="Stock Symbol:")
         self.stock_label.pack(anchor="w", pady=(0, 2))
@@ -1364,7 +1395,7 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
             bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.start_date_input.set_date(datetime.date(2025, 10, 1))
+        self.start_date_input.set_date(today)
         self.start_date_input.pack(fill="x", pady=2)
 
         # End date
@@ -1376,7 +1407,7 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
             bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.end_date_input.set_date(datetime.date(2025, 10, 30))
+        self.end_date_input.set_date(one_month_prior)
         self.end_date_input.pack(fill="x", pady=2)
 
 
