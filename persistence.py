@@ -103,8 +103,9 @@ def update_account(account_id, **kwargs):
         return
     with get_connection() as conn:
         cur = conn.cursor()
-        for col, val in kwargs.items():
-            cur.execute(f"UPDATE accounts SET {col} = ? WHERE account_id = ?", (val, account_id))
+        set_clause = ", ".join(f"{col} = ?" for col in kwargs)
+        values = list(kwargs.values()) + [account_id]
+        cur.execute(f"UPDATE accounts SET {set_clause} WHERE account_id = ?", values)
         conn.commit()
 
 def load_accounts():
