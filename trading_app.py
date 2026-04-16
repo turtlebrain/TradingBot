@@ -1395,7 +1395,7 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
             bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.start_date_input.set_date(today)
+        self.start_date_input.set_date(one_month_prior)
         self.start_date_input.pack(fill="x", pady=2)
 
         # End date
@@ -1407,7 +1407,7 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
             bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.end_date_input.set_date(one_month_prior)
+        self.end_date_input.set_date(today)
         self.end_date_input.pack(fill="x", pady=2)
 
 
