@@ -11,20 +11,6 @@ import persistence as persist
 engine_tol = 1e-9
 
 
-def _signals_row_at(signals: pd.DataFrame, date) -> dict:
-    """One row as dict; if duplicate labels, use the first row."""
-    if signals.empty or date not in signals.index:
-        return {}
-    sel = signals.loc[date]
-    if isinstance(sel, pd.DataFrame):
-        if sel.empty:
-            return {}
-        sel = sel.iloc[0]
-    elif not isinstance(sel, pd.Series):
-        return {}
-    return sel.to_dict()
-
-
 def _coerce_trade_signal(raw) -> int:
     """Normalize signal to -1, 0, or 1 (handles duplicate-index rows, nested dicts, lists)."""
     if raw is None:
