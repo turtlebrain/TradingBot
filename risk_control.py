@@ -32,16 +32,11 @@ class StopLoss:
         signal_data['TR'] = signal_data[['H_L', 'H_PC', 'L_PC']].max(axis=1)
         signal_data['ATR'] = signal_data['TR'].rolling(average_time_interval).mean()
 
-        # Initialize stop_loss column
-        signal_data['stop_loss'] = np.nan
-
-        # Position-based loop (index may be DatetimeIndex, not 0..n-1)
-        stop_ix = signal_data.columns.get_loc("stop_loss")
-        for pos in range(1, len(signal_data)):
-            if signal_data["positions"].iloc[pos] > 0:
-                entry_price = signal_data["price"].iloc[pos]
-                atr = signal_data["ATR"].iloc[pos]
-                if pd.notna(atr):
-                    signal_data.iat[pos, stop_ix] = entry_price - 2 * atr
+        # Vectorized stop-loss: set for bars where a long position is open
+        signal_data['stop_loss'] = np.where(
+            signal_data['positions'] > 0,
+            signal_data['price'] - 2 * signal_data['ATR'],
+            np.nan
+        )
 
         return signal_data

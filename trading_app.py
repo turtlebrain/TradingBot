@@ -17,6 +17,7 @@ import requests
 import chartforgetk_wrapper as cftk_wrap
 import time
 import datetime
+import calendar
 import threading
 import tick_streamer as qt_stream
 import strategy_tree_builder as stb
@@ -907,8 +908,17 @@ class TradingStrategyFrame(ttk.Frame):
                 self.run_strategy_button.config(text="Run Strategy")
                 del self._finalize_live
         else:
+            # Read all UI values on the main thread before spawning background work
             acc_id = int(self.active_account.name)
             stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip()
+            execution_tab = self.top_tabs.get_active_execution_tab()
+            position_sizer_param = float(execution_tab.position_slider_value.get())
+            stop_loss_enabled = execution_tab.stop_loss_var.get()
+            starting_capital = float(self.cash_var.get())
+            slippage = float(execution_tab.slippage_input.get().strip())
+            fee_rate = float(execution_tab.fee_rate_input.get().strip())
+            fee_min = float(execution_tab.minimum_fee_input.get().strip())
+            lot_size = int(execution_tab.lot_size_input.get().strip())
 
             session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest", buy_strategy, sell_strategy)
             raw_candles = self.search(show_output=False)
@@ -918,31 +928,46 @@ class TradingStrategyFrame(ttk.Frame):
                 persist.end_trade_session(session_id=session_id)
                 return
 
-            backtest_results = engine.backtest_strategy(
-                data=candle_data,
-                buy_logic=buy_logic,
-                sell_logic=sell_logic,
-                position_sizer_func=pos_sz.fixed_fraction_position_sizer,
-                position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
-                stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
-                starting_capital=float(self.cash_var.get()),
-                allow_short=False,
-                slippage=float(self.top_tabs.get_active_execution_tab().slippage_input.get().strip()),
-                fee_rate=float(self.top_tabs.get_active_execution_tab().fee_rate_input.get().strip()),
-                fee_min=float(self.top_tabs.get_active_execution_tab().minimum_fee_input.get().strip()),
-                lot_size=int(self.top_tabs.get_active_execution_tab().lot_size_input.get().strip()),
-                session_id=session_id,
-            )
+            self.run_strategy_button.config(text="Running…", state="disabled")
 
-            if not backtest_results.empty:
-                backtest_frame = self.controller.frames[BackTestingResultsFrame]
-                backtest_frame.backtest_results = backtest_results
-                backtest_frame.populate_backtest_display(backtest_results)
-                backtest_frame.results_chart.results = backtest_results
-                backtest_frame.results_chart.update_chart()
-                backtest_frame.render_trade_history()
+            def _run_backtest():
+                try:
+                    results = engine.backtest_strategy(
+                        data=candle_data,
+                        buy_logic=buy_logic,
+                        sell_logic=sell_logic,
+                        position_sizer_func=pos_sz.fixed_fraction_position_sizer,
+                        position_sizer_param=position_sizer_param,
+                        stop_loss_func=risk.StopLoss.average_true_range_stop if stop_loss_enabled else None,
+                        starting_capital=starting_capital,
+                        allow_short=False,
+                        slippage=slippage,
+                        fee_rate=fee_rate,
+                        fee_min=fee_min,
+                        lot_size=lot_size,
+                        session_id=session_id,
+                    )
+                    self.controller.root.after(0, lambda r=results: _finish(r))
+                except Exception as e:
+                    self.controller.root.after(0, lambda err=e: _on_error(err))
 
-            persist.end_trade_session(session_id=session_id)
+            def _finish(results):
+                if not results.empty:
+                    backtest_frame = self.controller.frames[BackTestingResultsFrame]
+                    backtest_frame.backtest_results = results
+                    backtest_frame.populate_backtest_display(results)
+                    backtest_frame.results_chart.results = results
+                    backtest_frame.results_chart.update_chart()
+                    backtest_frame.render_trade_history()
+                persist.end_trade_session(session_id=session_id)
+                self.run_strategy_button.config(text="Run Strategy", state="normal")
+
+            def _on_error(err):
+                messagebox.showerror("Strategy Error", str(err))
+                persist.end_trade_session(session_id=session_id)
+                self.run_strategy_button.config(text="Run Strategy", state="normal")
+
+            threading.Thread(target=_run_backtest, daemon=True).start()
 
    
 class CandlestickChartFrame(ttk.Frame):
@@ -1363,6 +1388,15 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, title="General")
         self.controller = controller
+        today = datetime.date.today()
+        prev_month = 12 if today.month == 1 else today.month - 1
+        prev_year = today.year - 1 if today.month == 1 else today.year
+        prev_month_last_day = calendar.monthrange(prev_year, prev_month)[1]
+        one_month_prior = datetime.date(
+            prev_year,
+            prev_month,
+            min(today.day, prev_month_last_day)
+        )
         # Stock symbol label
         self.stock_label = ttk.Label(self.content, text="Stock Symbol:")
         self.stock_label.pack(anchor="w", pady=(0, 2))
@@ -1392,7 +1426,7 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
             bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.end_date_input.set_date(datetime.date.today())
+        self.end_date_input.set_date(today)
         self.end_date_input.pack(fill="x", pady=2)
 
         # Start date
@@ -1404,7 +1438,7 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
             bootstyle="info",
             dateformat="%Y-%m-%d"
         )
-        self.start_date_input.set_date(self.end_date_input.get_date() - datetime.timedelta(days=30))
+        self.start_date_input.set_date(one_month_prior)
         self.start_date_input.pack(fill="x", pady=2)
 
 

@@ -31,26 +31,22 @@ def compute_ema_indicators(data: pd.DataFrame, params: dict) -> pd.DataFrame:
 
 def compute_rsi_indicator(data: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
-    Compute RSI using Wilder's smoothing.
+    Compute RSI using Wilder's smoothing (fully vectorized via EWM).
+    alpha = 1/lookback is mathematically equivalent to Wilder's recursive formula.
     Returns a DataFrame with rsi.
     """
     price = data['close']
     lookback = int(params.get('lookback', 14))
 
     delta = price.diff()
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
 
-    # Wilder's smoothing
-    avg_gain = pd.Series(gain).rolling(window=lookback, min_periods=lookback).mean()
-    avg_loss = pd.Series(loss).rolling(window=lookback, min_periods=lookback).mean()
+    # Wilder's smoothing: ewm with alpha=1/lookback, no Python loop required
+    avg_gain = gain.ewm(alpha=1.0 / lookback, adjust=False, min_periods=lookback).mean()
+    avg_loss = loss.ewm(alpha=1.0 / lookback, adjust=False, min_periods=lookback).mean()
 
-    # Recursive update for Wilder's method
-    for i in range(lookback, len(price)):
-        avg_gain.iloc[i] = (avg_gain.iloc[i-1] * (lookback - 1) + gain[i]) / lookback
-        avg_loss.iloc[i] = (avg_loss.iloc[i-1] * (lookback - 1) + loss[i]) / lookback
-
-    rs = avg_gain / avg_loss
+    rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
 
     out = pd.DataFrame(index=data.index)

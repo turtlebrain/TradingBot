@@ -236,9 +236,16 @@ def backtest_strategy(
         prev_equity=float(starting_capital),
     )
 
+    # Pre-convert signals to a list of dicts once so the hot loop avoids
+    # a per-row pandas label lookup (O(log n) each) + Series.to_dict() allocation.
+    if not signals.empty:
+        sig_list = signals.reindex(data.index).fillna(0).to_dict('records')
+    else:
+        sig_list = [{} for _ in range(len(data))]
+
     records = []
-    for date, row in data.iterrows():
-        sig_row = _signals_row_at(signals, date)
+    for i, (date, row) in enumerate(data.iterrows()):
+        sig_row = sig_list[i]
         state, rec = strategy_step(
             row, state, sig_row,
             position_sizer_func, position_sizer_param,
