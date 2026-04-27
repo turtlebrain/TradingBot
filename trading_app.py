@@ -37,8 +37,9 @@ class TradingBotApp:
         self.root.geometry("1440x900")
         self.system_running = False
 
-        # Load broker
-        self.broker = get_broker("questrade")   
+        # Broker is selected by the user before login.
+        self.selected_broker_name = None
+        self.broker = None   
         
         # Initialize database
         persist.init_db()
@@ -62,17 +63,31 @@ class TradingBotApp:
 
         # --- Content area (row 1) ---
         self.frames = {}
-        for F in (LoginFrame, AuthFrame, AccountManagerFrame, TradingStrategyFrame, BackTestingResultsFrame):
+        for F in (BrokerSelectionFrame, LoginFrame, AuthFrame, AccountManagerFrame, TradingStrategyFrame, BackTestingResultsFrame):
             frame = F(parent=container, controller=self)
             self.frames[F] = frame
             frame.grid(row=1, column=0, sticky="nsew")
 
-        # Start at login
-        self.show_frame(LoginFrame)
+        # Start at broker selection
+        self.show_frame(BrokerSelectionFrame)
      
     def show_frame(self, frame_calss):
         frame = self.frames[frame_calss]
+        if hasattr(frame, "on_show"):
+            frame.on_show()
         frame.tkraise() 
+
+    def select_broker(self, broker_name):
+        self.selected_broker_name = broker_name
+        self.broker = None
+        self.show_frame(LoginFrame)
+
+    def get_selected_broker(self):
+        if not self.selected_broker_name:
+            raise RuntimeError("Please choose a broker before logging in.")
+        if self.broker is None:
+            self.broker = get_broker(self.selected_broker_name)
+        return self.broker
     
     def show_main_frame(self, frame_class, name):
         """Show one of the main frames and update nav button styles."""
@@ -136,20 +151,99 @@ class TradingBotApp:
     def on_close(self):
         self.running = False
         # Gracefully end trade live trading and finalize dataframe, and finally stop stream and persist sessions
-        self.broker.log.end_session()
+        if self.broker and hasattr(self.broker, "log"):
+            self.broker.log.end_session()
         self.root.quit()
-            
+
+class BrokerSelectionFrame(ttk.Frame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, padding=40)
+        self.controller = controller
+
+        content = ttk.Frame(self)
+        content.place(relx=0.5, rely=0.5, anchor="center")
+
+        title = ttk.Label(content, text="Choose your broker", font=("Poppins", 24, "bold"))
+        title.grid(row=0, column=0, columnspan=2, pady=(0, 12))
+
+        subtitle = ttk.Label(
+            content,
+            text="Select the broker API you want to connect before continuing to the main app.",
+            font=("Poppins", 11),
+            wraplength=560,
+            justify="center"
+        )
+        subtitle.grid(row=1, column=0, columnspan=2, pady=(0, 28))
+
+        self._create_broker_option(
+            content,
+            row=2,
+            column=0,
+            broker_name="questrade",
+            title="Questrade",
+            description="Use the existing browser login and authorization-code flow.",
+        )
+        self._create_broker_option(
+            content,
+            row=2,
+            column=1,
+            broker_name="ibkr",
+            title="IBKR",
+            description="Use Interactive Brokers. Backend connection setup will run after this choice.",
+        )
+
+    def _create_broker_option(self, parent, row, column, broker_name, title, description):
+        card = ttk.Frame(parent, padding=24, relief="ridge", borderwidth=1)
+        card.grid(row=row, column=column, padx=12, sticky="nsew")
+        parent.columnconfigure(column, weight=1)
+
+        ttk.Label(card, text=title, font=("Poppins", 16, "bold")).pack(pady=(0, 8))
+        ttk.Label(card, text=description, wraplength=240, justify="center").pack(pady=(0, 18))
+        ttk.Button(
+            card,
+            text=f"Continue with {title}",
+            width=28,
+            bootstyle=PRIMARY,
+            command=lambda: self.controller.select_broker(broker_name)
+        ).pack()
+
 class LoginFrame(ttk.Frame):
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
-        self.login_button = ttk.Button(self, width=50, text="Log in", command=self.login)
-        self.login_button.place(relx=0.5, rely=0.5, anchor="center")
+        content = ttk.Frame(self)
+        content.place(relx=0.5, rely=0.5, anchor="center")
+
+        self.broker_label = ttk.Label(content, text="", font=("Poppins", 14, "bold"))
+        self.broker_label.pack(pady=(0, 12))
+
+        self.login_button = ttk.Button(content, width=50, text="Log in", command=self.login)
+        self.login_button.pack(pady=(0, 8))
+
+        self.change_broker_button = ttk.Button(
+            content,
+            width=50,
+            text="Change broker",
+            bootstyle=SECONDARY,
+            command=lambda: self.controller.show_frame(BrokerSelectionFrame)
+        )
+        self.change_broker_button.pack()
         self.pack_propagate(False)
+
+    def on_show(self):
+        broker_name = self.controller.selected_broker_name
+        broker_label = broker_name.upper() if broker_name == "ibkr" else "Questrade"
+        self.broker_label.configure(text=f"Selected broker: {broker_label}")
+        self.login_button.configure(text=f"Log in with {broker_label}")
 
     def login(self):
         # Use the broker abstraction
-        auth_info = self.controller.broker.authenticate()
+        try:
+            broker = self.controller.get_selected_broker()
+            auth_info = broker.authenticate()
+        except Exception as e:
+            messagebox.showerror("Login Error", f"Unable to start broker login: {e}")
+            return
         auth_url = auth_info.get("auth_url")
 
         if auth_url:
@@ -158,7 +252,7 @@ class LoginFrame(ttk.Frame):
             except Exception:
                 pass
             # Use broker's configured redirect_uri for messaging (optional: expose via broker)
-            redirect_uri = getattr(self.controller.broker, "redirect_uri", "YOUR_REDIRECT_URI")
+            redirect_uri = getattr(broker, "redirect_uri", "YOUR_REDIRECT_URI")
             messagebox.showinfo("Login", f"After logging in, you'll be redirected to: {redirect_uri}?code=YOUR_CODE_HERE")
             self.controller.show_frame(AuthFrame)
         else:
