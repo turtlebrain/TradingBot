@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 import math
-import strategy_tree_evaluator as ste
+from typing import Callable
 from Data.portfolio_state import PortfolioState
 from Data.trade_record import TradeRecord
 from Data.position_record import PositionRecord
@@ -123,29 +123,28 @@ def strategy_step(
 
 
 def backtest_strategy(
-    data :pd.DataFrame, 
-    buy_logic, 
-    sell_logic,
-    position_sizer_func, 
+    data: pd.DataFrame,
+    signal_logic: Callable[[pd.DataFrame], pd.DataFrame],
+    position_sizer_func,
     position_sizer_param,
     stop_loss_func,
-    starting_capital=10000.0, 
-    allow_short=False, 
-    slippage=0.001, 
-    fee_rate=0.001, 
-    fee_min=1.0, 
+    starting_capital=10000.0,
+    allow_short=False,
+    slippage=0.001,
+    fee_rate=0.001,
+    fee_min=1.0,
     lot_size=1,
     session_id=None
-    ) ->pd.DataFrame:
-    """ 
+) -> pd.DataFrame:
+    """
     Backtests a trading strategy on historical data.
-    :param data: DataFrame with historical price data 
-    :param buy_logic: Logic (Serialized Strategy Section) that generates buy signals
-    :param sell_logic: Logic (Serialized Strategy Section) that generates sell signals
+    :param data: DataFrame with historical price data
+    :param signal_logic: Callable mapping a candle DataFrame to a signals DataFrame
+        with at least a 'signal' column in {-1, 0, 1}.
     :param position_sizer_func: Function that determines position size based on state
     :param position_sizer_param: Position Sizer parameters being passed to position sizer function
     :param stop_loss_func: Function that determines the stop loss to manage risk
-    :param initial_capital: Starting capital for backtest
+    :param starting_capital: Starting capital for backtest
     :param allow_short: Whether to allow short selling
     :param slippage: Proportional slippage per trade (e.g., 0.001 for 0.1%)
     :param fee_rate: Proportional fee rate per trade (e.g., 0.001 for 0.1%)
@@ -158,8 +157,7 @@ def backtest_strategy(
     if lot_size < 1:
         raise ValueError("lot_size must be at least 1.")
 
-    # Unified evaluation
-    signals = evaluate_signals(buy_logic, sell_logic, data)
+    signals = evaluate_signals(signal_logic, data)
     # Optional stop-loss enrichment
     if stop_loss_func is not None and not signals.empty:
         signals = stop_loss_func(signals)
@@ -204,8 +202,7 @@ def backtest_strategy(
 
 def run_live_strategy(
     candle_source,
-    buy_logic,
-    sell_logic,
+    signal_logic: Callable[[pd.DataFrame], pd.DataFrame],
     position_sizer_func,
     position_sizer_param,
     stop_loss_func=None,
@@ -219,7 +216,14 @@ def run_live_strategy(
     session_id=None,
     ui_callback=None,
     history_window=500,
+    warmup_bars: int = 0,
 ):
+    # Ensure the rolling candle buffer is at least as wide as the warmup
+    # requirement of the strategy (longest base-strategy lookback + a
+    # safety margin). Without this, very long-lookback strategies would
+    # never see enough history to produce a signal.
+    if warmup_bars:
+        history_window = max(history_window, warmup_bars + 50)
     existing_positions = {}
     existing_cash = None
     realized_pnl_total = 0.0
@@ -315,8 +319,11 @@ def run_live_strategy(
 
         _seed_existing_position_snapshot(candle_row, symbol)
 
-        # Unified evaluation
-        signals_df = evaluate_signals(buy_logic, sell_logic, live_candles)
+        # Wait until enough history has accumulated to feed the strategy
+        if warmup_bars and len(live_candles) < warmup_bars:
+            return
+
+        signals_df = evaluate_signals(signal_logic, live_candles)
 
         if stop_loss_func and not signals_df.empty:
             signals_df = stop_loss_func(signals_df)
@@ -392,19 +399,21 @@ def run_live_strategy(
 
     return finalize
 
-def evaluate_signals(buy_logic, sell_logic, data: pd.DataFrame):
-    if callable(buy_logic):
-        signals_df = buy_logic(data)
-        if signals_df is None or signals_df.empty:
-            return pd.DataFrame(index=data.index)
-        return signals_df
-
-    signals_df = ste.evaluate_strategy(buy_logic, sell_logic, data)
-
-    if "buy" in signals_df.columns and "sell" in signals_df.columns:
-        signals_df = signals_df.rename(columns={"buy": "long_signal", "sell": "short_signal"})
-
-    return signals_df
+def evaluate_signals(signal_logic: Callable[[pd.DataFrame], pd.DataFrame], data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Run the configured signal_logic callable against the candle frame.
+    The callable must return a DataFrame indexed like ``data`` with at least
+    a 'signal' column in {-1, 0, 1}. Empty / None outputs are normalized
+    to an empty frame with the input index.
+    """
+    if data is None or len(data) == 0:
+        return pd.DataFrame(index=getattr(data, "index", []))
+    if signal_logic is None:
+        return pd.DataFrame(index=data.index)
+    out = signal_logic(data)
+    if out is None or out.empty:
+        return pd.DataFrame(index=data.index)
+    return out
 
 def compute_sharpe_ratio(returns: pd.Series, timeframe: str = "OneDay", annual_rf: float = 0.02) -> float:
     """

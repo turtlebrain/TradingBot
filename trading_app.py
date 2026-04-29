@@ -24,8 +24,8 @@ import strategy_tree_builder as stb
 import persistence as persist
 import tick_processor
 import queue
-from ML_Classifier.ml_trading_training import train_rule_ml_classifier
 import ML_Classifier.ml_trading_persistence as ml_persist
+from ML_Classifier.stacked_meta_learner import train_stacked_meta_learner
 
 
 class TradingBotApp:
@@ -899,26 +899,17 @@ class TradingStrategyFrame(ttk.Frame):
         is_live = self.top_tabs.get_active_chart().live_switch_var.get()
         strategy_tab = self.top_tabs.get_active_strategy_tab()
 
-        if strategy_tab.mode_var.get() == "ML Classifier" and hasattr(strategy_tab, "ml_model_result"):
-            buy_logic = lambda df: strategies.ml_signals(df, strategy_tab.ml_model_result, strategy_tab.ml_model_result)
-            sell_logic = None  # adapter ignores sell_logic in ML mode
+        signal_logic, strategy_descriptor, warmup_bars = strategy_tab.build_signal_logic()
 
-            buy_strategy = {"type": "ml_classifier",
-                            "threshold": strategy_tab.ml_model_result.get("decision_threshold", 0.5)}
-            sell_strategy = {"type": "ml_classifier"}
-        else:
-            buy_logic = strategy_tab.buy_section
-            sell_logic = strategy_tab.sell_section
-            buy_strategy = buy_logic
-            sell_strategy = sell_logic       
-        
         if is_live:
             if not hasattr(self, "_live_running") or not self._live_running:
                 acc_id = int(self.active_account.name)
                 candles = self.top_tabs.get_active_chart().candle_aggregator
                 stock_symbol = candles.symbol
 
-                session_id = persist.start_trade_session(acc_id, stock_symbol, "live", buy_strategy, sell_strategy)
+                session_id = persist.start_trade_session(
+                    acc_id, stock_symbol, "live", strategy_descriptor, strategy_descriptor
+                )
                 self.current_session_id = session_id
 
                 backtest_frame = self.controller.frames[BackTestingResultsFrame]
@@ -936,8 +927,7 @@ class TradingStrategyFrame(ttk.Frame):
 
                 self._finalize_live = engine.run_live_strategy(
                     candle_source=candles,
-                    buy_logic=buy_logic,
-                    sell_logic=sell_logic,
+                    signal_logic=signal_logic,
                     position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                     position_sizer_param=float(self.top_tabs.get_active_execution_tab().position_slider_value.get()),
                     stop_loss_func=risk.StopLoss.average_true_range_stop if self.top_tabs.get_active_execution_tab().stop_loss_var.get() else None,
@@ -950,6 +940,7 @@ class TradingStrategyFrame(ttk.Frame):
                     account_id=acc_id,
                     session_id=session_id,
                     ui_callback=_on_live_update,
+                    warmup_bars=warmup_bars,
                 )
 
                 self._live_running = True
@@ -993,7 +984,9 @@ class TradingStrategyFrame(ttk.Frame):
             fee_min = float(execution_tab.minimum_fee_input.get().strip())
             lot_size = int(execution_tab.lot_size_input.get().strip())
 
-            session_id = persist.start_trade_session(acc_id, stock_symbol, "backtest", buy_strategy, sell_strategy)
+            session_id = persist.start_trade_session(
+                acc_id, stock_symbol, "backtest", strategy_descriptor, strategy_descriptor
+            )
             candle_data = pd.DataFrame(self.search(show_output=False))
 
             self.run_strategy_button.config(text="Running…", state="disabled")
@@ -1002,8 +995,7 @@ class TradingStrategyFrame(ttk.Frame):
                 try:
                     results = engine.backtest_strategy(
                         data=candle_data,
-                        buy_logic=buy_logic,
-                        sell_logic=sell_logic,
+                        signal_logic=signal_logic,
                         position_sizer_func=pos_sz.fixed_fraction_position_sizer,
                         position_sizer_param=position_sizer_param,
                         stop_loss_func=risk.StopLoss.average_true_range_stop if stop_loss_enabled else None,
@@ -1506,188 +1498,122 @@ class GeneralInfoCollapsibleFrame(CollapsibleFrame):
 
 
 class StrategyCollapsibleFrame(CollapsibleFrame):
+    """
+    Strategy panel for the stacked meta-learner workflow.
+
+    The panel hosts:
+      - Base Strategies picker (flat StrategySection)
+      - Training Parameters dialog
+      - Train button
+      - Model Version selector (filtered to type=stacked_meta_learner)
+      - Cost-aware Training Results display
+
+    ``build_signal_logic`` is the integration point with the backtest and
+    live engines; it returns the meta-learner adapter as a single callable.
+    """
+
+    DEFAULT_TRAINING_PARAMS = {
+        "horizon": 10,
+        "up_barrier_atr": 1.5,
+        "down_barrier_atr": 1.5,
+        "vertical_bars": 10,
+        "embargo": 10,
+        "calibration": "isotonic",
+        "decision_threshold": 0.55,
+        "n_splits": 5,
+        "learning_rate": 0.05,
+        "cost_bp": 5.0,
+        "atr_window": 14,
+    }
+
     def __init__(self, parent, controller):
         super().__init__(parent, title="Strategy")
         self.controller = controller
-        
-        # --- ML Classifier training params ---
-        self.reg_c_var = tk.DoubleVar(value=1.0)
-        self.threshold_var = tk.DoubleVar(value=0.6)
-        self.n_splits_var = tk.IntVar(value=5)
-        self.horizon_var = tk.IntVar(value=3)
-        self.min_move = tk.DoubleVar(value=0.0005)
-        self.ml_model_result = None
 
-        # --- Toggle Row ---
-        toggle_row = ttk.Frame(self.content)
-        toggle_row.pack(fill="x", pady=5)
+        self.meta_model_result = None
 
-        ttk.Label(toggle_row, text="Strategy Mode:", font="-size 10 -weight bold").pack(side=LEFT, padx=5)
+        # Training params backed by Tk variables so the dialog edits persist.
+        self._training_vars = {
+            "horizon": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["horizon"]),
+            "up_barrier_atr": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["up_barrier_atr"]),
+            "down_barrier_atr": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["down_barrier_atr"]),
+            "vertical_bars": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["vertical_bars"]),
+            "embargo": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["embargo"]),
+            "calibration": tk.StringVar(value=self.DEFAULT_TRAINING_PARAMS["calibration"]),
+            "decision_threshold": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["decision_threshold"]),
+            "n_splits": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["n_splits"]),
+            "learning_rate": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["learning_rate"]),
+            "cost_bp": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["cost_bp"]),
+            "atr_window": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["atr_window"]),
+        }
 
-        self.mode_var = tk.StringVar(value="Indicator-Based")  # default
-        self.toggle = ttk.Combobox(toggle_row, values=["Indicator-Based", "ML Classifier"],
-                                   textvariable=self.mode_var, width=20, state="readonly")
-        self.toggle.pack(side=LEFT, padx=5)
-        self.toggle.bind("<<ComboboxSelected>>", self.switch_mode)
+        self._build_strategy_panel()
 
-        # --- Container for dynamic content ---
-        self.dynamic_frame = ttk.Frame(self.content)
-        self.dynamic_frame.pack(fill="x", pady=5)
-
-        # Initialize with Indicator-Based content
-        self._init_indicator_content()
-
-    def _init_indicator_content(self):
-        # Clear dynamic frame
-        for widget in self.dynamic_frame.winfo_children():
-            widget.destroy()
-
+    def _build_strategy_panel(self):
+        # --- Base Strategies picker ---
         strategy_list = list(strategies.trading_strategies.keys())
-
-        # BUY section
-        self.buy_section = stb.StrategySection(
-            self.dynamic_frame,
-            title="BUY",
+        self.base_section = stb.StrategySection(
+            self.content,
+            title="Base Strategies",
             strategies=strategy_list,
-            strategy_param_getter=self.get_strategy_params
+            strategy_param_getter=self.get_strategy_params,
         )
-        self.buy_section.pack(fill="x", pady=5)
+        self.base_section.pack(fill="x", pady=5)
 
-        # SELL section
-        self.sell_section = stb.StrategySection(
-            self.dynamic_frame,
-            title="SELL",
-            strategies=strategy_list,
-            strategy_param_getter=self.get_strategy_params
-        )
-        self.sell_section.pack(fill="x", pady=5)
+        # --- Train + Params button row ---
+        btn_row = ttk.Frame(self.content)
+        btn_row.pack(fill="x", pady=5)
 
-    def _init_ml_content(self):
-        # Clear dynamic frame
-        for widget in self.dynamic_frame.winfo_children():
-            widget.destroy()
+        ttk.Button(
+            btn_row, text="P", width=3, bootstyle=INFO,
+            command=self.open_param_dialog,
+        ).pack(side="left", padx=(5, 5))
+        ttk.Button(
+            btn_row, text="Train Model",
+            command=self.on_train_model,
+        ).pack(side="left")
 
-        ml_frame = ttk.Frame(self.dynamic_frame)
-        ml_frame.pack(fill="x", pady=5)
-
-        # --- Indicator Features ---
-        strategy_list = list(strategies.trading_strategies.keys())
-        self.indicator_section = stb.StrategySection(
-            ml_frame,
-            title="Signals",
-            strategies=strategy_list,
-            strategy_param_getter=self.get_strategy_params
-        )
-        self.indicator_section.pack(fill="x", pady=5)
-
-        btn_row = ttk.Frame(ml_frame)
-        btn_row.pack(pady=5)
-
-        # --- Parameters button (opens dialog) ---
-        ttk.Button(btn_row, text="P", width=3, bootstyle = INFO, command=self.open_param_dialog).pack(side="left", padx=(0, 5))
-
-        # --- Train button ---
-        ttk.Button(btn_row, text="Train Model", command=self.on_train_model).pack(side="left")
-        
         # --- Model Version Selector ---
-        version_row = ttk.Frame(ml_frame)
+        version_row = ttk.Frame(self.content)
         version_row.pack(fill="x", pady=5)
 
-        ttk.Label(version_row, text="Model Version:", width=12, anchor="w").pack(side="left", padx=(0,5))
+        ttk.Label(version_row, text="Model Version:", width=12, anchor="w").pack(side="left", padx=(5, 5))
 
         self.version_var = tk.StringVar()
         self.version_dropdown = ttk.Combobox(
             version_row,
             textvariable=self.version_var,
             state="readonly",
-            width=25
+            width=25,
         )
-        self.version_dropdown.pack(side="left", padx=(0,5))
+        self.version_dropdown.pack(side="left", padx=(0, 5))
         self.version_dropdown.bind("<<ComboboxSelected>>", self.on_version_selected)
         self.populate_version_selector()
 
-        # --- Training Results (preloaded with placeholders) ---
-        self.results_frame = ttk.LabelFrame(ml_frame, text="Training Results")
+        # --- Training Results ---
+        self.results_frame = ttk.LabelFrame(self.content, text="Training Results")
         self.results_frame.pack(fill="x", pady=5)
 
         self.result_labels = {}
-        metric_keys = ["Accuracy", "Precision", "Recall", "F1"]
-
+        metric_keys = [
+            ("trade_rate", "Trade rate"),
+            ("avg_edge_bp", "Avg edge (bp)"),
+            ("hit_rate", "Hit rate"),
+            ("brier", "Brier"),
+            ("calibration_mae", "Calib MAE"),
+            ("accuracy", "Accuracy"),
+        ]
         for i in range(0, len(metric_keys), 2):
             row = ttk.Frame(self.results_frame)
             row.pack(anchor="center", pady=2)
+            for key, label_text in metric_keys[i:i + 2]:
+                lbl = ttk.Label(row, text=f"{label_text}: ---", width=20, anchor="w")
+                lbl.pack(side="left", padx=10)
+                self.result_labels[key] = lbl
 
-            for key in metric_keys[i:i+2]:
-                label = ttk.Label(row, text=f"{key}: ---", width=15, anchor="w")
-                label.pack(side="left", padx=10)
-                self.result_labels[key.lower()] = label
-    
-    def on_version_selected(self, event=None):
-        selected_version = self.version_var.get()
-        model = ml_persist.load_artifacts(selected_version)
-        self.ml_model_result = model
-
-        reports = self.ml_model_result.get("validation_reports", [])
-        if reports:
-            metrics = {k: sum(r[k] for r in reports) / len(reports)
-                       for k in ["accuracy", "precision", "recall", "f1"]}
-            self.show_training_results(metrics)
-
-    def populate_version_selector(self):
-        """
-        Refresh the model version dropdown with persisted versions.
-        """
-        versions = ml_persist.list_versions()
-        self.version_dropdown["values"] = versions
-        if versions:
-            # Default to latest version
-            self.version_var.set(versions[-1])
-        else:
-            # Clear if no versions exist
-            self.version_var.set("")
-        
-    def on_train_model(self):
-        indicators_with_params = []
-        if hasattr(self, "indicator_section"):
-            indicators_with_params = self.indicator_section.serialize()
-    
-        params = {
-            "indicators": indicators_with_params,
-            "regularization_C": self.reg_c_var.get(),
-            "threshold": self.threshold_var.get(),
-            "n_splits": self.n_splits_var.get(),
-            "horizon": self.horizon_var.get(),
-            "min_move": self.min_move.get()
-        }
-    
-        try:
-            df = pd.DataFrame(self.controller.frames[TradingStrategyFrame].search(show_output=False))
-            model = train_rule_ml_classifier(df, params)
-    
-            if model.get("validation_reports"):
-                metrics = {}
-                for k in ["accuracy", "precision", "recall", "f1"]:
-                    metrics[k] = sum(r[k] for r in model["validation_reports"]) / len(model["validation_reports"])
-                self.show_training_results(metrics)
-                self.populate_version_selector()
-                self.ml_model_result = model
-    
-        except Exception as e:
-            print(f"Training failed: {e}")
-    
-    def show_training_results(self, metrics):
-        for k, v in metrics.items():
-            label = self.result_labels.get(k.lower())
-            if label:
-                label.config(text=f"{k.capitalize()}: {v:.4f}")
-        
-    def switch_mode(self, event=None):
-        mode = self.mode_var.get()
-        if mode == "Indicator-Based":
-            self._init_indicator_content()
-        else:
-            self._init_ml_content()
-
+    # ------------------------------------------------------------------
+    # Default per-strategy parameters surfaced by the StrategySection picker.
+    # ------------------------------------------------------------------
     def get_strategy_params(self, name):
         default_params = {
             "DMA Crossing": {"short_window": 20, "long_window": 50},
@@ -1697,29 +1623,157 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             "VWAP Break": {"lookback": 14},
         }
         return default_params.get(name, {})
-    
+
+    # ------------------------------------------------------------------
+    # Version selector
+    # ------------------------------------------------------------------
+    def _stacked_versions(self):
+        """Return only persisted versions whose metadata advertises type=stacked_meta_learner."""
+        out = []
+        for v in ml_persist.list_versions():
+            try:
+                paths = ml_persist.build_paths(v)
+                with open(paths["metadata"], "r") as f:
+                    meta = json.load(f)
+            except (OSError, ValueError):
+                continue
+            if meta.get("type") == "stacked_meta_learner":
+                out.append(v)
+        return out
+
+    def populate_version_selector(self):
+        versions = self._stacked_versions()
+        self.version_dropdown["values"] = versions
+        if versions:
+            self.version_var.set(versions[-1])
+            self.on_version_selected()
+        else:
+            self.version_var.set("")
+
+    def on_version_selected(self, event=None):
+        selected_version = self.version_var.get()
+        if not selected_version:
+            return
+        try:
+            self.meta_model_result = ml_persist.load_artifacts(selected_version)
+        except FileNotFoundError:
+            self.meta_model_result = None
+            return
+        self.show_training_results(self.meta_model_result.get("metrics", {}))
+
+    # ------------------------------------------------------------------
+    # Training
+    # ------------------------------------------------------------------
+    def _collect_training_params(self):
+        params = {k: var.get() for k, var in self._training_vars.items()}
+        params["base_strategies"] = self.base_section.serialize()
+        return params
+
+    def on_train_model(self):
+        params = self._collect_training_params()
+        if not params["base_strategies"]:
+            messagebox.showwarning(
+                "Train Model",
+                "Add at least one base strategy before training the meta-learner.",
+            )
+            return
+
+        try:
+            df = pd.DataFrame(self.controller.frames[TradingStrategyFrame].search(show_output=False))
+            model = train_stacked_meta_learner(df, params)
+        except Exception as e:
+            messagebox.showerror("Training failed", str(e))
+            return
+
+        self.meta_model_result = model
+        self.show_training_results(model.get("metrics", {}))
+        self.populate_version_selector()
+        if model.get("version"):
+            self.version_var.set(model["version"])
+
+    def show_training_results(self, metrics):
+        for key, label in self.result_labels.items():
+            text_prefix = label.cget("text").split(":", 1)[0]
+            value = metrics.get(key)
+            if value is None:
+                label.config(text=f"{text_prefix}: ---")
+            else:
+                label.config(text=f"{text_prefix}: {value:.4f}")
+
+    # ------------------------------------------------------------------
+    # Param dialog
+    # ------------------------------------------------------------------
     def open_param_dialog(self):
         dialog = tk.Toplevel(self)
         dialog.title("Training Parameters")
-        dialog.grab_set()  # modal
+        dialog.grab_set()
 
-        ttk.Label(dialog, text="Regularization (C):").pack(anchor="w", padx=10, pady=5)
-        ttk.Entry(dialog, textvariable=self.reg_c_var, width=10).pack(anchor="w", padx=10)
+        rows = [
+            ("Horizon (bars)", "horizon", "int"),
+            ("Up barrier (xATR)", "up_barrier_atr", "float"),
+            ("Down barrier (xATR)", "down_barrier_atr", "float"),
+            ("Vertical barrier (bars)", "vertical_bars", "int"),
+            ("Embargo (bars)", "embargo", "int"),
+            ("Calibration", "calibration", "calibration"),
+            ("Decision threshold", "decision_threshold", "float"),
+            ("CV splits", "n_splits", "int"),
+            ("Learning rate", "learning_rate", "float"),
+            ("Round-trip cost (bp)", "cost_bp", "float"),
+            ("ATR window", "atr_window", "int"),
+        ]
 
-        ttk.Label(dialog, text="Threshold:").pack(anchor="w", padx=10, pady=5)
-        ttk.Entry(dialog, textvariable=self.threshold_var, width=10).pack(anchor="w", padx=10)
+        for i, (label_text, var_key, kind) in enumerate(rows):
+            ttk.Label(dialog, text=label_text).grid(row=i, column=0, sticky="w", padx=10, pady=3)
+            if kind == "calibration":
+                widget = ttk.Combobox(
+                    dialog,
+                    textvariable=self._training_vars[var_key],
+                    values=["none", "platt", "isotonic"],
+                    state="readonly",
+                    width=12,
+                )
+            else:
+                widget = ttk.Entry(dialog, textvariable=self._training_vars[var_key], width=14)
+            widget.grid(row=i, column=1, sticky="w", padx=10, pady=3)
 
-        ttk.Label(dialog, text="Splits:").pack(anchor="w", padx=10, pady=5)
-        ttk.Entry(dialog, textvariable=self.n_splits_var, width=10).pack(anchor="w", padx=10)
+        ttk.Button(dialog, text="Close", command=dialog.destroy).grid(
+            row=len(rows), column=0, columnspan=2, pady=10
+        )
 
-        ttk.Label(dialog, text="Horizon:").pack(anchor="w", padx=10, pady=5)
-        ttk.Entry(dialog, textvariable=self.horizon_var, width=10).pack(anchor="w", padx=10)
-        
-        ttk.Label(dialog, text="Min move:").pack(anchor="w", padx=10, pady=5)
-        ttk.Entry(dialog, textvariable=self.min_move, width=10).pack(anchor="w", padx=10)
+    # ------------------------------------------------------------------
+    # Engine integration
+    # ------------------------------------------------------------------
+    def build_signal_logic(self):
+        """
+        Return ``(signal_logic, strategy_descriptor, warmup_bars)`` for the engine.
 
-        ttk.Button(dialog, text="Close", command=dialog.destroy).pack(pady=10)
-        
+        If no model is currently loaded, falls back to a no-op signal_logic
+        that produces zero signals so the run completes cleanly and the user
+        is informed up-front.
+        """
+        trained = self.meta_model_result
+        if trained is None:
+            messagebox.showwarning(
+                "Run Strategy",
+                "Train or load a model before running the strategy.",
+            )
+
+            def _empty(df: pd.DataFrame) -> pd.DataFrame:
+                return pd.DataFrame(index=df.index)
+
+            return _empty, {"type": "stacked_meta_learner", "version": None}, 0
+
+        params = trained.get("inference_params", trained)
+        signal_logic = lambda df: strategies.meta_learner_signals(df, trained, params)
+        descriptor = {
+            "type": "stacked_meta_learner",
+            "version": trained.get("version"),
+            "threshold": trained.get("decision_threshold"),
+            "base_strategies": trained.get("base_strategies", []),
+        }
+        warmup_bars = int(trained.get("warmup_bars", 0))
+        return signal_logic, descriptor, warmup_bars
+
 class ExecutionCollasibleFrame(CollapsibleFrame): 
     def __init__(self, parent):
         super().__init__(parent, title="Execution")
