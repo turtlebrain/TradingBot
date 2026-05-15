@@ -135,20 +135,20 @@ def delete_account(account_id):
 def start_trade_session(account_id, symbol, stream_type="live",
                         buy_strategy=None, sell_strategy=None):
     """
-    Start a trade session and persist strategy definitions.
-    Handles both indicator-based StrategySection objects and ML callables/dicts.
+    Start a trade session and persist the strategy descriptor.
+
+    Strategies are serialized as JSON descriptor dicts (for example
+    ``{"type": "stacked_meta_learner", "version": ..., "threshold": ...}``).
+    Anything else falls through to a tolerant ``{"repr": ...}`` blob so that
+    legacy sessions (the old indicator tree, the old LR classifier marker)
+    still round-trip even though new code never produces those shapes.
     """
 
     def _serialize_strategy(strategy):
         if strategy is None:
             return None
-        # ML marker dict
-        if isinstance(strategy, dict) and strategy.get("type") == "ml_classifier":
+        if isinstance(strategy, dict):
             return json.dumps(strategy)
-        # Indicator StrategySection
-        if hasattr(strategy, "serialize") and callable(strategy.serialize):
-            return json.dumps(strategy.serialize())
-        # Fallback
         return json.dumps({"repr": str(strategy)})
 
     buy_json = _serialize_strategy(buy_strategy)
