@@ -1388,6 +1388,13 @@ class ResultChartFrame(ttk.Frame):
         self.chart.grid(row=1, column=0, sticky="nsew")
         return self.chart
     
+    def _extract_timestamps(self, index):
+        """Convert a DataFrame index to a list of timestamps for chart labeling."""
+        try:
+            return list(pd.to_datetime(index))
+        except Exception:
+            return None
+
     def update_chart(self, *args):
         if self.results.empty:
             return
@@ -1402,9 +1409,17 @@ class ResultChartFrame(ttk.Frame):
 
         if series_list:
             datasets = []
+            common_valid = pd.Series(True, index=self.results.index)
             for series in series_list:
                 if series in self.results.columns:
-                    y_values = pd.to_numeric(self.results[series], errors="coerce").dropna().tolist()
+                    common_valid &= pd.to_numeric(self.results[series], errors="coerce").notna()
+
+            filtered = self.results.loc[common_valid]
+            chart.timestamps = self._extract_timestamps(filtered.index)
+
+            for series in series_list:
+                if series in filtered.columns:
+                    y_values = pd.to_numeric(filtered[series], errors="coerce").tolist()
                     if y_values:
                         datasets.append({
                             'data': y_values,
@@ -1412,11 +1427,13 @@ class ResultChartFrame(ttk.Frame):
                         })
 
             if datasets:
-                chart.plot(datasets)  # ChartForgeTK will handle multi-series mode
+                chart.plot(datasets)
         else:
-            y_values = pd.to_numeric(self.results[selected], errors="coerce").dropna().tolist()
+            numeric = pd.to_numeric(self.results[selected], errors="coerce").dropna()
+            chart.timestamps = self._extract_timestamps(numeric.index)
+            y_values = numeric.tolist()
             if y_values:
-                chart.plot(y_values)  # single series mode
+                chart.plot(y_values)
 
                     
 
