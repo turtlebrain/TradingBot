@@ -1588,7 +1588,6 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         )
         self.version_dropdown.pack(side="left", padx=(0, 5))
         self.version_dropdown.bind("<<ComboboxSelected>>", self.on_version_selected)
-        self.populate_version_selector()
 
         # --- Training Results ---
         self.results_frame = ttk.LabelFrame(self.content, text="Training Results")
@@ -1610,6 +1609,10 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 lbl = ttk.Label(row, text=f"{label_text}: ---", width=20, anchor="w")
                 lbl.pack(side="left", padx=10)
                 self.result_labels[key] = lbl
+
+        # Populate model versions only after result labels are initialized,
+        # because selection can immediately trigger result rendering.
+        self.populate_version_selector()
 
     # ------------------------------------------------------------------
     # Default per-strategy parameters surfaced by the StrategySection picker.
