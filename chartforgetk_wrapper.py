@@ -1,8 +1,33 @@
 from ChartForgeTK import CandlestickChart
 from ChartForgeTK import LineChart
 from typing import List, Optional, Union, Tuple, Dict
+import math
 import tkinter as tk
 from tkinter import ttk
+
+
+def _nice_step(data_range, num_ticks=6):
+    """Return a human-friendly tick step size for the given data range."""
+    if data_range <= 0:
+        return 1
+    raw = data_range / num_ticks
+    mag = 10 ** math.floor(math.log10(raw))
+    norm = raw / mag
+    if norm <= 1:
+        return mag
+    elif norm <= 2:
+        return 2 * mag
+    elif norm <= 5:
+        return 5 * mag
+    return 10 * mag
+
+
+def _tick_label(value, step):
+    """Format a tick value with appropriate decimal places."""
+    if step >= 1:
+        return f"{value:,.0f}"
+    decimals = max(0, -math.floor(math.log10(step))) + 1
+    return f"{value:,.{decimals}f}"
 
 class CandlestickChartNoLabels(CandlestickChart):
     def __init__(self, *args, show_labels=False, **kwargs):
@@ -135,16 +160,52 @@ class CandlestickChartNoLabels(CandlestickChart):
             )
     
     def _draw_ticks(self, x_min, x_max, y_min, y_max, skip_x_ticks=False):
-        """Override: allow skipping numeric x-ticks when timestamp labels are used."""
+        """Draw axis tick marks and value labels."""
+        num_ticks = 6
 
-        # --- Y-axis ticks (unchanged) ---
-        # keep your existing Y tick logic here
+        # --- Y-axis ticks ---
+        y_range = y_max - y_min
+        if y_range > 0:
+            step = _nice_step(y_range, num_ticks)
+            tick = math.ceil(y_min / step) * step
+            while tick <= y_max:
+                py = self._data_to_pixel_y(tick, y_min, y_max)
+                self.canvas.create_line(
+                    self.padding - 5, py, self.padding, py,
+                    fill=self.style.AXIS_COLOR, width=1,
+                )
+                self.canvas.create_text(
+                    self.padding - 8, py,
+                    text=_tick_label(tick, step),
+                    font=("Arial", 9),
+                    fill=self.style.TEXT_SECONDARY,
+                    anchor="e",
+                )
+                tick += step
 
         # --- X-axis ticks (conditionally skipped) ---
         if not skip_x_ticks:
-            # keep your existing numeric x-tick logic here
-            pass
-        
+            x_range = x_max - x_min
+            if x_range > 0:
+                step = _nice_step(x_range, num_ticks)
+                y_zero = 0 if y_min <= 0 <= y_max else y_min
+                axis_y = self._data_to_pixel_y(y_zero, y_min, y_max)
+                tick = math.ceil(x_min / step) * step
+                while tick <= x_max:
+                    px = self._data_to_pixel_x(tick, x_min, x_max)
+                    self.canvas.create_line(
+                        px, axis_y, px, axis_y + 5,
+                        fill=self.style.AXIS_COLOR, width=1,
+                    )
+                    self.canvas.create_text(
+                        px, axis_y + 10,
+                        text=_tick_label(tick, step),
+                        font=("Arial", 9),
+                        fill=self.style.TEXT_SECONDARY,
+                        anchor="n",
+                    )
+                    tick += step
+
     def _animate_candles(self, animate_last_only: bool = False):
         """Animate candles. If animate_last_only=True, only the last candle animates.
            Added ability through show_labels to turn on/off high/low labels.
@@ -536,17 +597,52 @@ class LineChartNoLabels(LineChart):
             )
     
     def _draw_ticks(self, x_min, x_max, y_min, y_max, skip_x_ticks=False):
-        """Override: allow skipping numeric x-ticks when timestamp labels are used."""
+        """Draw axis tick marks and value labels."""
+        num_ticks = 6
 
-        # --- Y-axis ticks (unchanged) ---
-        # keep your existing Y tick logic here
+        # --- Y-axis ticks ---
+        y_range = y_max - y_min
+        if y_range > 0:
+            step = _nice_step(y_range, num_ticks)
+            tick = math.ceil(y_min / step) * step
+            while tick <= y_max:
+                py = self._data_to_pixel_y(tick, y_min, y_max)
+                self.canvas.create_line(
+                    self.padding - 5, py, self.padding, py,
+                    fill=self.style.AXIS_COLOR, width=1,
+                )
+                self.canvas.create_text(
+                    self.padding - 8, py,
+                    text=_tick_label(tick, step),
+                    font=("Arial", 9),
+                    fill=self.style.TEXT_SECONDARY,
+                    anchor="e",
+                )
+                tick += step
 
         # --- X-axis ticks (conditionally skipped) ---
         if not skip_x_ticks:
-            # keep your existing numeric x-tick logic here
-            pass
-        
-           
+            x_range = x_max - x_min
+            if x_range > 0:
+                step = _nice_step(x_range, num_ticks)
+                y_zero = 0 if y_min <= 0 <= y_max else y_min
+                axis_y = self._data_to_pixel_y(y_zero, y_min, y_max)
+                tick = math.ceil(x_min / step) * step
+                while tick <= x_max:
+                    px = self._data_to_pixel_x(tick, x_min, x_max)
+                    self.canvas.create_line(
+                        px, axis_y, px, axis_y + 5,
+                        fill=self.style.AXIS_COLOR, width=1,
+                    )
+                    self.canvas.create_text(
+                        px, axis_y + 10,
+                        text=_tick_label(tick, step),
+                        font=("Arial", 9),
+                        fill=self.style.TEXT_SECONDARY,
+                        anchor="n",
+                    )
+                    tick += step
+
     def _animate_lines(self, y_min: float, y_max: float):
         """Added ability through show_labels to turn on/off labels."""
 
