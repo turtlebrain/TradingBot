@@ -15,6 +15,7 @@ import risk_control as risk
 import trading_engine as engine
 import requests 
 import chartforgetk_wrapper as cftk_wrap
+import chart_performance as chart_perf
 import time
 import datetime
 import calendar
@@ -1129,14 +1130,30 @@ class CandlestickChartFrame(ttk.Frame):
             bootstyle="info-round-toggle"
         )
         self.cross_asset_toggle.grid(row=0, column=2, sticky="nsew")
-        
-        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 1075, height = 430)
-        self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
+
+        viewport_frame = ttk.Frame(self)
+        viewport_frame.grid(row=0, column=3, columnspan=2, sticky="ew", padx=(8, 0))
+        ttk.Label(viewport_frame, text="Visible bars:").pack(side="left", padx=(0, 4))
+        self.visible_mode_var = tk.StringVar(value="500")
+        self.visible_mode_combo = ttk.Combobox(
+            viewport_frame,
+            textvariable=self.visible_mode_var,
+            values=["500", "1000", "All"],
+            width=8,
+            state="readonly",
+        )
+        self.visible_mode_combo.pack(side="left")
+        self.visible_mode_combo.bind("<<ComboboxSelected>>", self._on_viewport_change)
+        ttk.Button(viewport_frame, text="◀", width=3, command=self._scroll_chart_left).pack(side="left", padx=(6, 2))
+        ttk.Button(viewport_frame, text="▶", width=3, command=self._scroll_chart_right).pack(side="left")
+
+        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 1075, height = 415)
+        self.candle_chart.grid(row=1, column=0, columnspan=5, sticky="nsew")
         
         self.timeframe_options = ["OneMinute", "OneHour", "OneDay", "OneWeek"]
         self.time_interval = "OneDay"
         control_frame = ttk.Frame(self)
-        control_frame.grid(row=2, column=0, columnspan=4, sticky="ew")
+        control_frame.grid(row=2, column=0, columnspan=5, sticky="ew")
         control_frame.grid_rowconfigure(0, weight=0)
         for i in range(len(self.timeframe_options)):
             control_frame.grid_columnconfigure(i, weight=1)
@@ -1151,6 +1168,11 @@ class CandlestickChartFrame(ttk.Frame):
         self.streamer = None
         self.candle_aggregator = None
         self._poll_job = None
+        self._update_job = None
+        self._full_df = pd.DataFrame()
+        self._view_start = 0
+        self._last_rendered_len = None
+        self._chart_title = ""
     
     def toggle_live_mode(self):
         if self.live_switch_var.get():
@@ -1265,20 +1287,95 @@ class CandlestickChartFrame(ttk.Frame):
             self.candle_chart.show_labels = False
         self.candle_chart.redraw()
             
+    def _max_draw_bars(self):
+        return max(100, self.candle_chart.width - 2 * self.candle_chart.padding)
+
+    def _window_size_from_mode(self):
+        mode = self.visible_mode_var.get()
+        if mode == "All":
+            return None
+        return int(mode)
+
+    def _prepare_display_df(self, df):
+        self._full_df = df.copy()
+        window_size = self._window_size_from_mode()
+        if window_size is None:
+            self._view_start = 0
+        else:
+            max_start = max(0, len(self._full_df) - window_size)
+            if self._view_start > max_start:
+                self._view_start = max_start
+        display_df, self._view_start = chart_perf.prepare_ohlc_for_display(
+            self._full_df,
+            window_size,
+            self._view_start,
+            self._max_draw_bars(),
+        )
+        return display_df
+
+    def _on_viewport_change(self, _event=None):
+        if self._full_df.empty:
+            return
+        if self.visible_mode_var.get() != "All":
+            window_size = self._window_size_from_mode()
+            self._view_start = max(0, len(self._full_df) - window_size)
+        self.update_chart(self._full_df, force_full=True)
+
+    def _scroll_chart_left(self):
+        if self._full_df.empty or self.visible_mode_var.get() == "All":
+            return
+        step = max(1, self._window_size_from_mode() // 4)
+        self._view_start = max(0, self._view_start - step)
+        self.update_chart(self._full_df, force_full=True)
+
+    def _scroll_chart_right(self):
+        if self._full_df.empty or self.visible_mode_var.get() == "All":
+            return
+        window_size = self._window_size_from_mode()
+        step = max(1, window_size // 4)
+        max_start = max(0, len(self._full_df) - window_size)
+        self._view_start = min(max_start, self._view_start + step)
+        self.update_chart(self._full_df, force_full=True)
+
     def convert_data_for_chart(self, df):
-        # Ensure index is reset so we can enumerate
-        df = df.reset_index(drop=True)
-        # Create list of tuples: (index, open, high, low, close)
-        return [
-            (i, float(row['open']), float(row['high']), float(row['low']), float(row['close']))
-            for i, row in df.iterrows()
-        ]
-    
-    def update_chart(self, df, animate_last_only = False):
+        n = len(df)
+        if n == 0:
+            return []
+        idx = range(n)
+        opens = df["open"].to_numpy(dtype=float)
+        highs = df["high"].to_numpy(dtype=float)
+        lows = df["low"].to_numpy(dtype=float)
+        closes = df["close"].to_numpy(dtype=float)
+        return list(zip(idx, opens, highs, lows, closes))
+
+    def update_chart(self, df, animate_last_only=False, force_full=False):
+        if force_full or not animate_last_only:
+            if self.visible_mode_var.get() != "All":
+                window_size = self._window_size_from_mode()
+                if force_full or self._full_df.empty or len(df) != len(self._full_df):
+                    self._view_start = max(0, len(df) - window_size)
+
+        display_df = self._prepare_display_df(df)
+        if display_df.empty:
+            return
+
+        chart_data = self.convert_data_for_chart(display_df)
+        title = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip()
+        self._chart_title = title
+
+        if (
+            animate_last_only
+            and not force_full
+            and self._last_rendered_len == len(display_df)
+            and chart_data
+            and self.candle_chart.update_last_candle(chart_data[-1], len(chart_data) - 1)
+        ):
+            return
+
         self.candle_chart.clear()
-        self.candle_chart.timestamps = list(df.index)
-        self.candle_chart.plot(self.convert_data_for_chart(df), 
-                               self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip(), animate_last_only)
+        self.candle_chart.timestamps = list(display_df.index)
+        self.candle_chart.plot(chart_data, title, animate_last_only)
+        self._last_rendered_len = len(display_df)
         
     def periodically_update_chart(self):
         candles_df = self.candle_aggregator.get_candles()
@@ -1411,9 +1508,11 @@ class BackTestingResultsFrame(ttk.Frame):
         acc_id = int(self.controller.frames[TradingStrategyFrame].active_account.name)
         trade_session = persist.load_trade_sessions(acc_id).loc[session_id]
         self.results_chart.results = trade_stream
-        self.results_chart.stock_symbol = trade_session['symbol'] if not trade_session.empty else ""      
-        self.result_settings_tab.populate_result_text(self.result_settings_tab.get_result_summary(trade_stream))   
-        self.results_chart.update_chart() 
+        self.results_chart.stock_symbol = trade_session['symbol'] if not trade_session.empty else ""
+        self.results_chart._view_start = 0
+        self.results_chart._full_results = pd.DataFrame()
+        self.result_settings_tab.populate_result_text(self.result_settings_tab.get_result_summary(trade_stream))
+        self.results_chart.update_chart()
         
     def create_session_card(self, parent, session_id, timestamp, stream_type):
         card = tk.Frame(parent, bg="#2e3e4e", padx=10, pady=5)
@@ -1467,6 +1566,9 @@ class ResultChartFrame(ttk.Frame):
         self.result_var = result_var
         self.result_var.trace_add("write", self.update_chart)    
         self.stock_symbol = ""
+        self._full_results = pd.DataFrame()
+        self._view_start = 0
+        self.chart = None
         # Show labels toggle
         self.show_label_var = tk.BooleanVar(value=False)
         self.show_label_toggle = ttk.Checkbutton(
@@ -1476,6 +1578,23 @@ class ResultChartFrame(ttk.Frame):
             command=self.toggle_show_label
         )
         self.show_label_toggle.grid(row=0, column=0, sticky="nsew")
+
+        viewport_frame = ttk.Frame(self)
+        viewport_frame.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        ttk.Label(viewport_frame, text="Visible bars:").pack(side="left", padx=(0, 4))
+        self.visible_mode_var = tk.StringVar(value="500")
+        self.visible_mode_combo = ttk.Combobox(
+            viewport_frame,
+            textvariable=self.visible_mode_var,
+            values=["500", "1000", "All"],
+            width=8,
+            state="readonly",
+        )
+        self.visible_mode_combo.pack(side="left")
+        self.visible_mode_combo.bind("<<ComboboxSelected>>", self._on_viewport_change)
+        ttk.Button(viewport_frame, text="◀", width=3, command=self._scroll_chart_left).pack(side="left", padx=(6, 2))
+        ttk.Button(viewport_frame, text="▶", width=3, command=self._scroll_chart_right).pack(side="left")
+
         self.create_chart(self.show_label)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -1494,13 +1613,107 @@ class ResultChartFrame(ttk.Frame):
     
     def create_chart(self, show_labels=False):
         self.chart = cftk_wrap.LineChartNoLabels(self, width=800, show_labels=show_labels, height=450)
-        self.chart.grid(row=1, column=0, sticky="nsew")
+        self.chart.grid(row=1, column=0, columnspan=2, sticky="nsew")
         return self.chart
-    
-    def _extract_timestamps(self, index):
-        """Convert a DataFrame index to a list of timestamps for chart labeling."""
+
+    def _max_draw_points(self):
+        if self.chart is None:
+            return 800
+        return max(100, self.chart.width - 2 * self.chart.padding)
+
+    def _window_size_from_mode(self):
+        mode = self.visible_mode_var.get()
+        if mode == "All":
+            return None
+        return int(mode)
+
+    def _prepare_display_results(self, df):
+        self._full_results = df.copy()
+        window_size = self._window_size_from_mode()
+        if window_size is None:
+            self._view_start = 0
+        else:
+            max_start = max(0, len(self._full_results) - window_size)
+            if self._view_start > max_start:
+                self._view_start = max_start
+        visible, self._view_start = chart_perf.slice_visible_window(
+            self._full_results,
+            window_size,
+            self._view_start,
+        )
+        return visible
+
+    def _on_viewport_change(self, _event=None):
+        if self._full_results.empty:
+            return
+        if self.visible_mode_var.get() != "All":
+            window_size = self._window_size_from_mode()
+            self._view_start = max(0, len(self._full_results) - window_size)
+        self.update_chart()
+
+    def _scroll_chart_left(self):
+        if self._full_results.empty or self.visible_mode_var.get() == "All":
+            return
+        step = max(1, self._window_size_from_mode() // 4)
+        self._view_start = max(0, self._view_start - step)
+        self.update_chart()
+
+    def _scroll_chart_right(self):
+        if self._full_results.empty or self.visible_mode_var.get() == "All":
+            return
+        window_size = self._window_size_from_mode()
+        step = max(1, window_size // 4)
+        max_start = max(0, len(self._full_results) - window_size)
+        self._view_start = min(max_start, self._view_start + step)
+        self.update_chart()
+
+    def _labels_for_rows(self, df, row_index):
+        """Return x-axis labels aligned with ``row_index``; never treat row ids as epoch times."""
+        if df is None or df.empty:
+            return None
+
+        row_index = pd.Index(row_index)
+
+        if "ts" in df.columns:
+            ts = pd.to_datetime(df.loc[row_index, "ts"], errors="coerce")
+            if ts.notna().any():
+                return list(ts)
+
+        subset_index = df.loc[row_index].index
+        if isinstance(subset_index, pd.DatetimeIndex):
+            return list(subset_index)
+
+        if pd.api.types.is_integer_dtype(subset_index):
+            return None
+
         try:
-            return list(pd.to_datetime(index))
+            parsed = pd.to_datetime(subset_index, errors="coerce")
+            if parsed.notna().all():
+                return list(parsed)
+        except Exception:
+            pass
+        return None
+
+    def _series_for_chart(self, y_values, df, row_index):
+        """Return y values and matching timestamps, downsampled when needed."""
+        max_points = self._max_draw_points()
+        raw_labels = self._labels_for_rows(df, row_index)
+        if len(y_values) <= max_points:
+            return y_values, raw_labels
+        y_out, idx_out = chart_perf.downsample_line_with_index(y_values, raw_labels, max_points)
+        if idx_out is not None:
+            idx_out = list(pd.to_datetime(idx_out, errors="coerce"))
+        return y_out, idx_out
+
+    def _extract_timestamps(self, index):
+        """Convert labels to datetimes; ignore plain integer indices (row ids)."""
+        if index is None:
+            return None
+        try:
+            idx = pd.Index(index)
+            if pd.api.types.is_integer_dtype(idx):
+                return None
+            return list(pd.to_datetime(index, errors="coerce"))
         except Exception:
             return None
 
@@ -1508,40 +1721,60 @@ class ResultChartFrame(ttk.Frame):
         if self.results.empty:
             return
 
-        selected = self.result_var.get()
+        if self.chart is None:
+            self.create_chart(show_labels=self.show_label)
+        else:
+            self.chart.show_labels = self.show_label
 
-        # Always reset chart before plotting
-        self.reset_chart()
-        chart = self.create_chart(show_labels=self.show_label)
+        if self.visible_mode_var.get() != "All":
+            window_size = self._window_size_from_mode()
+            if self._full_results.empty or len(self.results) != len(self._full_results):
+                self._view_start = max(0, len(self.results) - window_size)
+
+        selected = self.result_var.get()
+        display_results = self._prepare_display_results(self.results)
+        chart = self.chart
         chart.title = self.stock_symbol
         series_list = self.controller.frames[BackTestingResultsFrame].result_settings_tab.selected_series
 
         if series_list:
             datasets = []
-            common_valid = pd.Series(True, index=self.results.index)
+            common_valid = pd.Series(True, index=display_results.index)
             for series in series_list:
-                if series in self.results.columns:
-                    common_valid &= pd.to_numeric(self.results[series], errors="coerce").notna()
+                if series in display_results.columns:
+                    common_valid &= pd.to_numeric(display_results[series], errors="coerce").notna()
 
-            filtered = self.results.loc[common_valid]
-            chart.timestamps = self._extract_timestamps(filtered.index)
+            filtered = display_results.loc[common_valid]
+            chart_timestamps = None
 
             for series in series_list:
                 if series in filtered.columns:
-                    y_values = pd.to_numeric(filtered[series], errors="coerce").tolist()
+                    numeric = pd.to_numeric(filtered[series], errors="coerce").dropna()
+                    y_values = numeric.tolist()
                     if y_values:
+                        y_values, timestamps = self._series_for_chart(
+                            y_values, filtered, numeric.index
+                        )
+                        if chart_timestamps is None:
+                            chart_timestamps = timestamps
                         datasets.append({
                             'data': y_values,
                             'label': series
                         })
 
             if datasets:
+                chart.timestamps = chart_timestamps
+                chart.clear()
                 chart.plot(datasets)
         else:
-            numeric = pd.to_numeric(self.results[selected], errors="coerce").dropna()
-            chart.timestamps = self._extract_timestamps(numeric.index)
+            numeric = pd.to_numeric(display_results[selected], errors="coerce").dropna()
             y_values = numeric.tolist()
             if y_values:
+                y_values, timestamps = self._series_for_chart(
+                    y_values, display_results, numeric.index
+                )
+                chart.timestamps = timestamps
+                chart.clear()
                 chart.plot(y_values)
 
                     
