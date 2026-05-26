@@ -560,6 +560,12 @@ class TabbedWorkspaceFrame(ttk.Frame):
         lbl.pack(side="left")
         lbl.bind("<Button-1>", lambda e, t=tab: self.select_workspace(t))
 
+        # Keep references so we can re-render the title (e.g. prepend [CA])
+        # without losing the original base title.
+        tab.title_label = lbl
+        tab.base_title = title
+        tab.base_width = 6
+
         if closable:
             btn = ttk.Button(tab, text="✖", width=2, bootstyle=DANGER,
                              command=lambda t=tab: self.close_workspace(t))
@@ -647,6 +653,62 @@ class TabbedWorkspaceFrame(ttk.Frame):
         """Clear charts in all workspaces."""
         for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
             chart.candle_chart.clear()
+
+    # --- Cross-asset workspace helpers ---
+    # A "cross-asset" workspace is a chart tab the user has flagged to be used
+    # as a second-symbol input (e.g. SPY when training MES) for strategies that
+    # consume cross_asset_bars. At most one workspace can be marked at a time,
+    # and the active (primary) workspace cannot reference itself.
+    def get_cross_asset_workspace(self):
+        """Return the (workspace, tab, chart, general_tab, strategy_tab, execution_tab)
+        tuple for the workspace currently marked as cross-asset, or None."""
+        for entry in self.workspaces:
+            _, _, chart, *_ = entry
+            var = getattr(chart, "cross_asset_var", None)
+            if var is not None and var.get():
+                return entry
+        return None
+
+    def get_cross_asset_chart(self):
+        entry = self.get_cross_asset_workspace()
+        return entry[2] if entry else None
+
+    def get_cross_asset_general_tab(self):
+        entry = self.get_cross_asset_workspace()
+        return entry[3] if entry else None
+
+    def clear_cross_asset_marks_except(self, chart_to_keep):
+        """Unmark cross-asset on every workspace except the one whose chart is
+        chart_to_keep. Used to enforce the one-at-a-time invariant whenever the
+        user flips the toggle on in a new workspace."""
+        for workspace, tab, chart, *_ in self.workspaces:
+            if chart is chart_to_keep:
+                continue
+            var = getattr(chart, "cross_asset_var", None)
+            if var is not None and var.get():
+                var.set(False)
+                self._set_tab_cross_asset_prefix(tab, False)
+
+    def set_cross_asset_prefix_for_chart(self, chart, mark_on):
+        """Update the tab label (add or remove the [CA] prefix) for the workspace
+        whose chart is the given one. Called by CandlestickChartFrame.toggle_cross_asset."""
+        for workspace, tab, c, *_ in self.workspaces:
+            if c is chart:
+                self._set_tab_cross_asset_prefix(tab, mark_on)
+                return
+
+    def _set_tab_cross_asset_prefix(self, tab_widget, mark_on):
+        """Idempotently add or remove the [CA] prefix on a tab label, widening
+        the label slot so the longer text doesn't get truncated."""
+        lbl = getattr(tab_widget, "title_label", None)
+        base_title = getattr(tab_widget, "base_title", None)
+        if lbl is None or base_title is None:
+            return
+        prefix = "[CA]"
+        new_text = f"{prefix}{base_title}" if mark_on else base_title
+        base_width = getattr(tab_widget, "base_width", 6)
+        new_width = max(len(new_text) + 1, base_width)
+        lbl.configure(text=new_text, width=new_width)
 
  
 class TradingStrategyFrame(ttk.Frame):
@@ -1054,6 +1116,19 @@ class CandlestickChartFrame(ttk.Frame):
             offvalue=False
         )
         self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
+
+        # Cross-asset toggle: flags this workspace as the secondary symbol for
+        # strategies that consume cross_asset_bars (e.g. SPY basis for MES).
+        # Mutually exclusive with live mode and one-at-a-time across workspaces.
+        self.cross_asset_var = tk.BooleanVar(value=False)
+        self.cross_asset_toggle = ttkb.Checkbutton(
+            self,
+            text="Mark as cross-asset",
+            variable=self.cross_asset_var,
+            command=self.toggle_cross_asset,
+            bootstyle="info-round-toggle"
+        )
+        self.cross_asset_toggle.grid(row=0, column=2, sticky="nsew")
         
         self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 1075, height = 430)
         self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
@@ -1078,7 +1153,18 @@ class CandlestickChartFrame(ttk.Frame):
         self._poll_job = None
     
     def toggle_live_mode(self):
-        if self.live_switch_var.get(): 
+        if self.live_switch_var.get():
+            # A workspace flagged as cross-asset is treated as a read-only
+            # secondary input; live streaming would mutate its candles and
+            # contaminate the primary strategy's feature build.
+            if self.cross_asset_var.get():
+                messagebox.showwarning(
+                    "Live mode unavailable",
+                    "This workspace is marked as cross-asset. "
+                    "Unmark it before enabling live mode."
+                )
+                self.live_switch_var.set(False)
+                return
             self.tick_queue = queue.Queue()
             auth_frame = self.controller.frames[AuthFrame]
             self.streamer = qt_stream.QuestradeStreamer(
@@ -1107,7 +1193,30 @@ class CandlestickChartFrame(ttk.Frame):
             self.tick_queue = None
             for rb in self.timeframe_buttons:
                 rb.config(state=tk.NORMAL)
-    
+
+    def toggle_cross_asset(self):
+        """Flip this workspace's cross-asset flag and keep the workspace tabs
+        in sync (one-at-a-time, [CA] prefix on the tab label).
+
+        Tk fires the ``command`` after the BooleanVar has already been flipped,
+        so ``cross_asset_var.get()`` reflects the *target* state."""
+        top_tabs = self.controller.frames[TradingStrategyFrame].top_tabs
+        if self.cross_asset_var.get():
+            # Block when live: streaming would mutate the bars we want to use
+            # as a stable secondary input.
+            if self.live_switch_var.get():
+                messagebox.showwarning(
+                    "Cross-asset unavailable",
+                    "Disable live mode before marking this workspace as cross-asset."
+                )
+                self.cross_asset_var.set(False)
+                return
+            # Enforce one cross-asset workspace at a time.
+            top_tabs.clear_cross_asset_marks_except(self)
+            top_tabs.set_cross_asset_prefix_for_chart(self, True)
+        else:
+            top_tabs.set_cross_asset_prefix_for_chart(self, False)
+
     def shutdown(self):
         """Gracefully stop live streaming and background jobs."""
         if self.live_switch_var.get():
