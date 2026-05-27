@@ -1399,7 +1399,7 @@ class CandlestickChartFrame(ttk.Frame):
         if force_full or not animate_last_only:
             if self.visible_mode_var.get() != "All":
                 window_size = self._window_size_from_mode()
-                if force_full or self._full_df.empty or len(df) != len(self._full_df):
+                if self._full_df.empty or len(df) != len(self._full_df):
                     self._view_start = max(0, len(df) - window_size)
 
         display_df = self._prepare_display_df(df)
@@ -1724,7 +1724,8 @@ class ResultChartFrame(ttk.Frame):
         if "ts" in df.columns:
             ts = pd.to_datetime(df.loc[row_index, "ts"], errors="coerce")
             if ts.notna().any():
-                return list(ts)
+                if len(ts) <= 1 or ts.dropna().nunique() > 1:
+                    return list(ts)
 
         subset_index = df.loc[row_index].index
         if isinstance(subset_index, pd.DatetimeIndex):

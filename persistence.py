@@ -173,8 +173,11 @@ def end_trade_session(session_id):
 
 def insert_trade_stream(session_id, df_stream):
     """Persist an entire DataFrame of trade stream rows for a session."""
+    stream = df_stream.copy()
+    if "ts" not in stream.columns and not pd.api.types.is_integer_dtype(stream.index):
+        stream["ts"] = stream.index
     with get_connection() as conn:
-        df_stream.assign(session_id=session_id).to_sql(
+        stream.assign(session_id=session_id).to_sql(
             "trade_streams", conn, if_exists="append", index=False
         )
 
