@@ -888,65 +888,112 @@ class TradingStrategyFrame(ttk.Frame):
             )
 
                      
-    def search(self, show_output=True):  
-        stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip() 
-        start_date = self.top_tabs.get_active_general_tab().start_date_input.get_date().isoformat()
-        end_date = self.top_tabs.get_active_general_tab().end_date_input.get_date().isoformat()
-        if not stock_symbol or not start_date or not end_date:
+    def _normalize_candle_df(self, candle_data) -> pd.DataFrame:
+        """Normalize a raw broker candle payload (list of dicts) into a
+        DataFrame indexed by UTC timestamps and sorted ascending.
+
+        Shared between the primary search path and cross-asset fetches so
+        feature builders see the same shape regardless of which workspace
+        the candles came from. Returns an empty DataFrame when the payload
+        itself is empty; raises ValueError when the payload is non-empty
+        but cannot be normalized (missing or unparseable timestamp column)
+        so callers can surface the specific failure to the user.
+        """
+        candle_df = pd.DataFrame(candle_data)
+        if candle_df.empty:
+            return candle_df
+
+        timestamp_col = None
+        for candidate in ("start", "startTime", "date", "timestamp", "time"):
+            if candidate in candle_df.columns:
+                timestamp_col = candidate
+                break
+        if timestamp_col is None:
+            raise ValueError(
+                "Candle data is missing a timestamp field. "
+                f"Available fields: {list(candle_df.columns)}"
+            )
+
+        candle_df["timestamp"] = pd.to_datetime(
+            candle_df[timestamp_col], utc=True, errors="coerce"
+        )
+        candle_df = candle_df.dropna(subset=["timestamp"])
+        if candle_df.empty:
+            raise ValueError("Unable to parse candle timestamps from broker response.")
+
+        candle_df.set_index("timestamp", inplace=True)
+        candle_df.sort_index(inplace=True)
+        return candle_df
+
+    def search(self, show_output=True, workspace=None):
+        """Fetch candles for a workspace and return a normalized DataFrame.
+
+        workspace=None  -> use the active workspace (existing behaviour).
+        workspace=<tuple from TabbedWorkspaceFrame> -> use that workspace's
+            general tab (symbol/dates) and chart (timeframe). This is how
+            cross-asset fetches read from an inactive tab without forcing
+            the user to switch tabs.
+
+        The chart attached to the chosen workspace is redrawn only when
+        show_output is True. Returns an empty DataFrame on any failure
+        (and surfaces the failure via a dialog), so callers can simply
+        check ``.empty``.
+        """
+        if workspace is None:
+            general_tab = self.top_tabs.get_active_general_tab()
+            chart = self.top_tabs.get_active_chart()
+        else:
+            _, _, chart, general_tab, *_ = workspace
+
+        if general_tab is None or chart is None:
+            messagebox.showerror("Internal Error", "Could not resolve target workspace.")
+            return pd.DataFrame()
+
+        stock_symbol = general_tab.stock_input.get().strip()
+        start_date_obj = general_tab.start_date_input.get_date()
+        end_date_obj = general_tab.end_date_input.get_date()
+        if not stock_symbol or start_date_obj is None or end_date_obj is None:
             messagebox.showwarning("Input Error", "Please enter a valid stock symbol as query.")
-            return
-        # API Search
+            return pd.DataFrame()
+
         my_access_token = self.controller.frames[AuthFrame].access_token
-        my_api_server = self.controller.frames[AuthFrame].api_server  
+        my_api_server = self.controller.frames[AuthFrame].api_server
         if not my_access_token and not my_api_server:
             print("No access token found, please log in and authenticate first")
-            return   
-        try:   
+            return pd.DataFrame()
+
+        try:
             symbol_data = self.controller.broker.get_symbols(query=stock_symbol)
             if not symbol_data:
                 print("No data found for:", stock_symbol)
-                return
+                return pd.DataFrame()
             symbol_id = symbol_data[0]['symbolId']
-            active_chart = self.top_tabs.get_active_chart()
             candle_data = self.controller.broker.get_candles(
-                symbol=symbol_id, 
-                start=self.top_tabs.get_active_general_tab().start_date_input.get_date(), 
-                end=self.top_tabs.get_active_general_tab().end_date_input.get_date(),
-                interval= active_chart.time_interval
+                symbol=symbol_id,
+                start=start_date_obj,
+                end=end_date_obj,
+                interval=chart.time_interval,
             )
-            candle_data_pd = pd.DataFrame(candle_data)
-            if candle_data_pd.empty:
-                messagebox.showwarning("No Data", "No candle data returned for the selected range.")
-                return
 
-            # Normalize timestamp across broker formats.
-            timestamp_col = None
-            for candidate in ("start", "startTime", "date", "timestamp", "time"):
-                if candidate in candle_data_pd.columns:
-                    timestamp_col = candidate
-                    break
+            try:
+                candle_df = self._normalize_candle_df(candle_data)
+            except ValueError as parse_err:
+                messagebox.showerror("Data Error", str(parse_err))
+                return pd.DataFrame()
 
-            if timestamp_col is None:
-                messagebox.showerror(
-                    "Data Error",
-                    f"Candle data is missing a timestamp field. Available fields: {list(candle_data_pd.columns)}"
+            if candle_df.empty:
+                messagebox.showwarning(
+                    "No Data",
+                    f"No candle data returned for {stock_symbol} in the selected range."
                 )
-                return
+                return candle_df
 
-            candle_data_pd["timestamp"] = pd.to_datetime(candle_data_pd[timestamp_col], utc=True, errors="coerce")
-            candle_data_pd = candle_data_pd.dropna(subset=["timestamp"])
-            if candle_data_pd.empty:
-                messagebox.showerror("Data Error", "Unable to parse candle timestamps from broker response.")
-                return
-            # Set index
-            candle_data_pd.set_index("timestamp", inplace=True)
-            candle_data_pd.sort_index(inplace=True)
             if show_output:
-                # Plot candlestick chart
-                active_chart.update_chart(candle_data_pd)
-            return candle_data
+                chart.update_chart(candle_df)
+            return candle_df
         except requests.exceptions.HTTPError as err:
-            messagebox.showerror("Error", f"HTTP error occurered {err}")           
+            messagebox.showerror("Error", f"HTTP error occurered {err}")
+            return pd.DataFrame()
 
     
     def is_input_valid_float(self, input, name):
