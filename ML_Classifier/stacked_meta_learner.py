@@ -418,6 +418,12 @@ def train_stacked_meta_learner(
     }
     inference_params.update(_microstructure_params(params))
 
+    # Snapshot of *what was trained on* (symbol / timeframe / dates / CA pair).
+    # The metalearner does not interpret these fields, it just round-trips them
+    # so the UI and any future strict-mode inference guard can validate that
+    # the model is being used in a context compatible with its training.
+    training_context = dict(params.get("training_context", {}) or {})
+
     result = {
         "type": "stacked_meta_learner",
         "pipeline": final_estimator,
@@ -433,6 +439,7 @@ def train_stacked_meta_learner(
         "fold_metrics": fold_metrics,
         "metrics": metrics,
         "warmup_bars": warmup_bars,
+        "training_context": training_context,
     }
     version = save_training_artifacts(result)
     result["version"] = version

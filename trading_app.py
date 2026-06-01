@@ -2017,6 +2017,26 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 lbl.pack(side="left", padx=10)
                 self.result_labels[key] = lbl
 
+        # "Trained on" describes the saved model's training context (primary
+        # symbol/timeframe/date range). Filled in from artifact metadata when a
+        # version is selected, or from the current workspace when training runs.
+        self.trained_on_label = ttk.Label(
+            self.results_frame,
+            text="Trained on: ---",
+            anchor="w",
+        )
+        self.trained_on_label.pack(fill="x", padx=10, pady=(6, 0))
+
+        # Cross-asset status: tells the user whether the last training run used a
+        # cross-asset secondary feed and how many bars overlapped after alignment.
+        # Stays blank until on_train_model populates it via show_training_results.
+        self.cross_asset_status_label = ttk.Label(
+            self.results_frame,
+            text="Cross-asset: none",
+            anchor="w",
+        )
+        self.cross_asset_status_label.pack(fill="x", padx=10, pady=(0, 2))
+
         # Populate model versions only after result labels are initialized,
         # because selection can immediately trigger result rendering.
         self.populate_version_selector()
@@ -2069,7 +2089,23 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         except FileNotFoundError:
             self.meta_model_result = None
             return
-        self.show_training_results(self.meta_model_result.get("metrics", {}))
+
+        # Hydrate the status labels from the saved training context. Older
+        # artifacts (trained before Option C landed) simply lack the field;
+        # .get() returns {} and the labels fall back to their default text.
+        ctx = self.meta_model_result.get("training_context") or {}
+        ca_info = None
+        if ctx.get("cross_asset_symbol"):
+            ca_info = {
+                "symbol": ctx["cross_asset_symbol"],
+                "aligned_bars": ctx.get("cross_asset_aligned_bars"),
+                # primary_bars absent on load: show "trained with N aligned bars"
+            }
+        self.show_training_results(
+            self.meta_model_result.get("metrics", {}),
+            cross_asset_info=ca_info,
+            training_context=ctx,
+        )
 
     # ------------------------------------------------------------------
     # Training
@@ -2088,20 +2124,129 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             )
             return
 
+        ts_frame = self.controller.frames[TradingStrategyFrame]
+        top_tabs = ts_frame.top_tabs
+
+        primary_general = top_tabs.get_active_general_tab()
+        primary_chart = top_tabs.get_active_chart()
+        if primary_general is None or primary_chart is None:
+            messagebox.showerror("Train Model", "No active workspace.")
+            return
+        primary_symbol = primary_general.stock_input.get().strip()
+
+        # Cross-asset detection runs BEFORE any network calls so we can surface
+        # a clear validation error without burning a broker fetch.
+        ca_entry = top_tabs.get_cross_asset_workspace()
+        ca_symbol = None
+        if ca_entry is not None:
+            _, _, ca_chart, ca_general, *_ = ca_entry
+            ca_symbol = ca_general.stock_input.get().strip()
+
+            if not ca_symbol:
+                messagebox.showwarning(
+                    "Train Model",
+                    "Cross-asset workspace has no symbol. Enter one or unmark "
+                    "cross-asset before training.",
+                )
+                return
+
+            # Self-reference would collapse the basis z-score to a constant
+            # (log(price/price) == 0), giving the model a useless feature.
+            if ca_symbol.upper() == primary_symbol.upper():
+                messagebox.showwarning(
+                    "Train Model",
+                    f"Cross-asset workspace references the same symbol as the primary "
+                    f"('{primary_symbol}'). Change the cross-asset symbol or unmark "
+                    f"cross-asset before training.",
+                )
+                return
+
+            # Different timeframes would produce a sparse intersection and a
+            # basis series full of NaNs; force the user to match them.
+            if ca_chart.time_interval != primary_chart.time_interval:
+                messagebox.showwarning(
+                    "Train Model",
+                    f"Cross-asset timeframe ({ca_chart.time_interval}) must match the "
+                    f"primary timeframe ({primary_chart.time_interval}). Switch "
+                    f"timeframes or unmark cross-asset before training.",
+                )
+                return
+
         try:
-            df = pd.DataFrame(self.controller.frames[TradingStrategyFrame].search(show_output=False))
-            model = train_stacked_meta_learner(df, params)
+            df = ts_frame.search(show_output=False)
+        except Exception as e:
+            messagebox.showerror("Training failed", f"Could not fetch primary candles: {e}")
+            return
+        if df.empty:
+            # search() already surfaced its own dialog; abort silently.
+            return
+
+        cross_asset_bars = None
+        cross_asset_status = None
+        if ca_entry is not None:
+            try:
+                cross_asset_bars = ts_frame.search(show_output=False, workspace=ca_entry)
+            except Exception as e:
+                messagebox.showerror(
+                    "Training failed",
+                    f"Could not fetch cross-asset candles: {e}",
+                )
+                return
+            if cross_asset_bars.empty:
+                return
+
+            aligned_count = len(df.index.intersection(cross_asset_bars.index))
+            cross_asset_status = {
+                "symbol": ca_symbol,
+                "primary_bars": len(df),
+                "ca_bars": len(cross_asset_bars),
+                "aligned_bars": aligned_count,
+            }
+
+            # Activate the basis z-score microstructure feature for this run
+            # and persist the choice in inference_params.
+            params["enable_basis"] = True
+
+        # Snapshot of the training context. Persisted with the artifact so a
+        # future inference run can detect symbol / timeframe / CA-symbol drift
+        # against the current workspace. Today it drives the status labels;
+        # item 4 (and an eventual strict-mode flag) will use it to validate.
+        training_context = {
+            "primary_symbol": primary_symbol,
+            "primary_timeframe": primary_chart.time_interval,
+            "train_start": primary_general.start_date_input.get_date().isoformat(),
+            "train_end": primary_general.end_date_input.get_date().isoformat(),
+            "cross_asset_symbol": ca_symbol,  # None if no CA workspace
+            "cross_asset_aligned_bars": (
+                cross_asset_status["aligned_bars"] if cross_asset_status else None
+            ),
+        }
+        params["training_context"] = training_context
+
+        try:
+            model = train_stacked_meta_learner(
+                df, params, cross_asset_bars=cross_asset_bars
+            )
         except Exception as e:
             messagebox.showerror("Training failed", str(e))
             return
 
         self.meta_model_result = model
-        self.show_training_results(model.get("metrics", {}))
+        self.show_training_results(
+            model.get("metrics", {}),
+            cross_asset_info=cross_asset_status,
+            training_context=training_context,
+        )
         self.populate_version_selector()
         if model.get("version"):
             self.version_var.set(model["version"])
 
-    def show_training_results(self, metrics):
+    def show_training_results(self, metrics, cross_asset_info=None, training_context=None):
+        """Render metrics + training-context labels for either a just-trained
+        model (``cross_asset_info`` carries the live aligned-bar counts) or a
+        loaded artifact (``cross_asset_info`` may carry only the saved
+        ``aligned_bars`` from training). ``training_context`` populates the
+        "Trained on:" header line."""
         for key, label in self.result_labels.items():
             text_prefix = label.cget("text").split(":", 1)[0]
             value = metrics.get(key)
@@ -2109,6 +2254,40 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 label.config(text=f"{text_prefix}: ---")
             else:
                 label.config(text=f"{text_prefix}: {value:.4f}")
+
+        if hasattr(self, "trained_on_label"):
+            if training_context:
+                symbol = training_context.get("primary_symbol") or "?"
+                tf = training_context.get("primary_timeframe") or "?"
+                start = training_context.get("train_start")
+                end = training_context.get("train_end")
+                date_part = f" ({start}..{end})" if start and end else ""
+                self.trained_on_label.config(text=f"Trained on: {symbol} {tf}{date_part}")
+            else:
+                self.trained_on_label.config(text="Trained on: ---")
+
+        if hasattr(self, "cross_asset_status_label"):
+            if cross_asset_info is None:
+                self.cross_asset_status_label.config(text="Cross-asset: none")
+            else:
+                symbol = cross_asset_info.get("symbol") or "?"
+                aligned = cross_asset_info.get("aligned_bars")
+                primary = cross_asset_info.get("primary_bars")
+                if primary:
+                    # Live training run: we know the denominator, so show the
+                    # alignment ratio so the user can spot a poor pairing fast.
+                    pct = (100.0 * aligned / primary) if aligned is not None else 0.0
+                    text = (
+                        f"Cross-asset: {symbol} | aligned bars "
+                        f"{aligned}/{primary} ({pct:.1f}%)"
+                    )
+                elif aligned is not None:
+                    # Loaded artifact: only the training-time aligned count was
+                    # saved; no denominator survives so render without the pct.
+                    text = f"Cross-asset: {symbol} | trained with {aligned} aligned bars"
+                else:
+                    text = f"Cross-asset: {symbol}"
+                self.cross_asset_status_label.config(text=text)
 
     # ------------------------------------------------------------------
     # Param dialog
