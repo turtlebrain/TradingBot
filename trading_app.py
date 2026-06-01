@@ -2346,33 +2346,181 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
     # ------------------------------------------------------------------
     # Engine integration
     # ------------------------------------------------------------------
-    def build_signal_logic(self):
-        """
-        Return ``(signal_logic, strategy_descriptor, warmup_bars)`` for the engine.
+    # Flip to True once a model is promoted past the PoC phase: drift between
+    # the loaded model and the current workspace then becomes a hard refusal
+    # instead of a warning. Hard blockers (e.g. missing required cross-asset
+    # workspace) refuse the run regardless of this flag.
+    STRICT_MODEL_VALIDATION = False
 
-        If no model is currently loaded, falls back to a no-op signal_logic
-        that produces zero signals so the run completes cleanly and the user
-        is informed up-front.
+    def _check_model_workspace_compatibility(self, trained, ca_entry):
+        """Compare a loaded/trained model against the current workspace.
+
+        Returns ``(blocker_msg, drift_msg)``:
+
+        * ``blocker_msg`` non-None -> hard refusal regardless of
+          ``STRICT_MODEL_VALIDATION``; the model cannot run in the current
+          configuration (e.g. it requires the basis feature but no
+          cross-asset workspace is marked).
+        * ``drift_msg`` non-None -> soft drift between the saved training
+          context and the current workspace; warn-only today, refused when
+          ``STRICT_MODEL_VALIDATION`` is True.
+        * Both None -> all clear.
         """
+        feature_cols = trained.get("feature_columns") or []
+        model_uses_basis = any(str(c).startswith("basis_z_") for c in feature_cols)
+
+        if model_uses_basis and ca_entry is None:
+            return (
+                "This model has the cross-asset basis feature in its schema. "
+                "Mark a workspace as cross-asset before running the strategy, "
+                "otherwise every prediction would be NaN-blocked.",
+                None,
+            )
+
+        ctx = trained.get("training_context") or {}
+        expected_primary_symbol = ctx.get("primary_symbol")
+        expected_primary_tf = ctx.get("primary_timeframe")
+        expected_ca_symbol = ctx.get("cross_asset_symbol")
+
+        ts_frame = self.controller.frames[TradingStrategyFrame]
+        top_tabs = ts_frame.top_tabs
+        primary_general = top_tabs.get_active_general_tab()
+        primary_chart = top_tabs.get_active_chart()
+        primary_symbol = (
+            primary_general.stock_input.get().strip() if primary_general else ""
+        )
+        primary_tf = primary_chart.time_interval if primary_chart else ""
+
+        ca_symbol = None
+        if ca_entry is not None:
+            _, _, _, ca_general, *_ = ca_entry
+            ca_symbol = ca_general.stock_input.get().strip()
+
+        drifts = []
+        if (
+            expected_primary_symbol
+            and primary_symbol
+            and primary_symbol.upper() != expected_primary_symbol.upper()
+        ):
+            drifts.append(
+                f"Primary symbol differs from training "
+                f"(model={expected_primary_symbol}, workspace={primary_symbol})."
+            )
+        if (
+            expected_primary_tf
+            and primary_tf
+            and primary_tf != expected_primary_tf
+        ):
+            drifts.append(
+                f"Primary timeframe differs "
+                f"(model={expected_primary_tf}, workspace={primary_tf})."
+            )
+        if (
+            expected_ca_symbol
+            and ca_symbol
+            and ca_symbol.upper() != expected_ca_symbol.upper()
+        ):
+            drifts.append(
+                f"Cross-asset symbol differs "
+                f"(model={expected_ca_symbol}, workspace={ca_symbol})."
+            )
+        if expected_ca_symbol and ca_entry is None and not model_uses_basis:
+            # Edge case: training context recorded a CA pairing but the
+            # feature didn't actually land in the schema (e.g. enable_basis
+            # was off at training time). Surface as drift, not blocker.
+            drifts.append(
+                f"Model context recorded cross-asset={expected_ca_symbol} but "
+                "no cross-asset workspace is marked."
+            )
+
+        drift_msg = "\n".join(drifts) if drifts else None
+        return (None, drift_msg)
+
+    def build_signal_logic(self):
+        """Return ``(signal_logic, strategy_descriptor, warmup_bars)`` for the engine.
+
+        Cross-asset bars (when the marked CA workspace exists) are fetched at
+        build time and captured in the returned closure so the engine never
+        has to know about secondary feeds. Compatibility between the loaded
+        model and the current workspace is validated up front: hard blockers
+        always refuse, drift warnings warn-or-block based on
+        ``STRICT_MODEL_VALIDATION``.
+
+        Falls back to a no-op signal_logic on any refusal so the engine still
+        sees a well-formed callable and the run completes cleanly.
+        """
+
+        def _empty_logic():
+            def _empty(df: pd.DataFrame) -> pd.DataFrame:
+                return pd.DataFrame(index=df.index)
+
+            return _empty, {"type": "stacked_meta_learner", "version": None}, 0
+
         trained = self.meta_model_result
         if trained is None:
             messagebox.showwarning(
                 "Run Strategy",
                 "Train or load a model before running the strategy.",
             )
+            return _empty_logic()
 
-            def _empty(df: pd.DataFrame) -> pd.DataFrame:
-                return pd.DataFrame(index=df.index)
+        ts_frame = self.controller.frames[TradingStrategyFrame]
+        top_tabs = ts_frame.top_tabs
+        ca_entry = top_tabs.get_cross_asset_workspace()
 
-            return _empty, {"type": "stacked_meta_learner", "version": None}, 0
+        blocker_msg, drift_msg = self._check_model_workspace_compatibility(
+            trained, ca_entry
+        )
+        if blocker_msg:
+            messagebox.showerror("Run Strategy", blocker_msg)
+            return _empty_logic()
+        if drift_msg:
+            if self.STRICT_MODEL_VALIDATION:
+                messagebox.showerror(
+                    "Run Strategy",
+                    f"Model / workspace mismatch (strict mode):\n\n{drift_msg}",
+                )
+                return _empty_logic()
+            messagebox.showwarning(
+                "Run Strategy",
+                f"Model / workspace drift detected:\n\n{drift_msg}\n\n"
+                "Proceeding anyway. Set STRICT_MODEL_VALIDATION to True to "
+                "refuse drifted runs.",
+            )
+
+        # Fetch CA bars at build time so any failure is surfaced before the
+        # backtest thread starts; the engine never sees the secondary feed.
+        cross_asset_bars = None
+        if ca_entry is not None:
+            try:
+                cross_asset_bars = ts_frame.search(
+                    show_output=False, workspace=ca_entry
+                )
+            except Exception as e:
+                messagebox.showerror(
+                    "Run Strategy",
+                    f"Could not fetch cross-asset bars: {e}",
+                )
+                return _empty_logic()
+            if cross_asset_bars.empty:
+                # search() already showed its own "No Data" dialog.
+                return _empty_logic()
 
         params = trained.get("inference_params", trained)
-        signal_logic = lambda df: strategies.meta_learner_signals(df, trained, params)
+
+        def signal_logic(df: pd.DataFrame) -> pd.DataFrame:
+            return strategies.meta_learner_signals(
+                df, trained, params, cross_asset_bars=cross_asset_bars
+            )
+
+        ctx = trained.get("training_context") or {}
         descriptor = {
             "type": "stacked_meta_learner",
             "version": trained.get("version"),
             "threshold": trained.get("decision_threshold"),
             "base_strategies": trained.get("base_strategies", []),
+            "cross_asset_symbol": ctx.get("cross_asset_symbol"),
+            "used_cross_asset_bars": cross_asset_bars is not None,
         }
         warmup_bars = int(trained.get("warmup_bars", 0))
         return signal_logic, descriptor, warmup_bars
