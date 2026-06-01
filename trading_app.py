@@ -1957,10 +1957,14 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self._build_strategy_panel()
 
     def _build_strategy_panel(self):
+        self.scrolled_panel = ScrolledFrame(self.content, autohide=True, bootstyle="round")
+        self.scrolled_panel.pack(fill="both", expand=True)
+        panel = self.scrolled_panel
+
         # --- Base Strategies picker ---
         strategy_list = list(strategies.trading_strategies.keys())
         self.base_section = stb.StrategySection(
-            self.content,
+            panel,
             title="Base Strategies",
             strategies=strategy_list,
             strategy_param_getter=self.get_strategy_params,
@@ -1968,7 +1972,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.base_section.pack(fill="x", pady=5)
 
         # --- Train + Params button row ---
-        btn_row = ttk.Frame(self.content)
+        btn_row = ttk.Frame(panel)
         btn_row.pack(fill="x", pady=5)
 
         ttk.Button(
@@ -1981,7 +1985,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         ).pack(side="left")
 
         # --- Model Version Selector ---
-        version_row = ttk.Frame(self.content)
+        version_row = ttk.Frame(panel)
         version_row.pack(fill="x", pady=5)
 
         ttk.Label(version_row, text="Model Version:", width=12, anchor="w").pack(side="left", padx=(5, 5))
@@ -1997,9 +2001,13 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.version_dropdown.bind("<<ComboboxSelected>>", self.on_version_selected)
 
         # --- Training Results ---
-        self.results_frame = ttk.LabelFrame(self.content, text="Training Results")
+        self.results_frame = ttk.LabelFrame(panel, text="Training Results")
         self.results_frame.pack(fill="x", pady=5)
 
+        # Metrics laid out as one row per metric inside a grid so we always fit
+        # within the narrow sidebar width regardless of value length: the metric
+        # name is pinned to the left, the value to the right, and the row
+        # stretches to whatever width the LabelFrame happens to be.
         self.result_labels = {}
         metric_keys = [
             ("trade_rate", "Trade rate"),
@@ -2009,21 +2017,29 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             ("calibration_mae", "Calib MAE"),
             ("accuracy", "Accuracy"),
         ]
-        for i in range(0, len(metric_keys), 2):
-            row = ttk.Frame(self.results_frame)
-            row.pack(anchor="center", pady=2)
-            for key, label_text in metric_keys[i:i + 2]:
-                lbl = ttk.Label(row, text=f"{label_text}: ---", width=20, anchor="w")
-                lbl.pack(side="left", padx=10)
-                self.result_labels[key] = lbl
+        metrics_block = ttk.Frame(self.results_frame)
+        metrics_block.pack(fill="x", padx=5, pady=2)
+        metrics_block.columnconfigure(0, weight=1)
+        metrics_block.columnconfigure(1, weight=0)
+        for i, (key, label_text) in enumerate(metric_keys):
+            ttk.Label(metrics_block, text=label_text, anchor="w").grid(
+                row=i, column=0, sticky="ew", padx=(5, 4), pady=1
+            )
+            value_lbl = ttk.Label(metrics_block, text="---", anchor="e")
+            value_lbl.grid(row=i, column=1, sticky="e", padx=(4, 5), pady=1)
+            self.result_labels[key] = value_lbl
 
         # "Trained on" describes the saved model's training context (primary
         # symbol/timeframe/date range). Filled in from artifact metadata when a
         # version is selected, or from the current workspace when training runs.
+        # wraplength lets the long combined string flow onto a second line
+        # instead of clipping against the sidebar's right edge.
         self.trained_on_label = ttk.Label(
             self.results_frame,
             text="Trained on: ---",
             anchor="w",
+            justify="left",
+            wraplength=220,
         )
         self.trained_on_label.pack(fill="x", padx=10, pady=(6, 0))
 
@@ -2034,6 +2050,8 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             self.results_frame,
             text="Cross-asset: none",
             anchor="w",
+            justify="left",
+            wraplength=220,
         )
         self.cross_asset_status_label.pack(fill="x", padx=10, pady=(0, 2))
 
@@ -2248,12 +2266,8 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         ``aligned_bars`` from training). ``training_context`` populates the
         "Trained on:" header line."""
         for key, label in self.result_labels.items():
-            text_prefix = label.cget("text").split(":", 1)[0]
             value = metrics.get(key)
-            if value is None:
-                label.config(text=f"{text_prefix}: ---")
-            else:
-                label.config(text=f"{text_prefix}: {value:.4f}")
+            label.config(text="---" if value is None else f"{value:.4f}")
 
         if hasattr(self, "trained_on_label"):
             if training_context:
