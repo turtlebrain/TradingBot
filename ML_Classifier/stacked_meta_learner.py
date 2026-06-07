@@ -1,22 +1,35 @@
 """
 Stacked meta-learner pipeline.
 
-This module is the single ML mode of the trading bot. It consumes the
-continuous scores exposed by the rule-based strategies in
-``trading_strategies`` plus a small set of regime features, applies a
-gradient-boosted classifier with a purged + embargoed walk-forward CV,
-and emits +1/-1/0 trade signals via ``predict_meta_learner``.
+This module is the single ML mode of the trading bot. It consumes:
+
+  * continuous scores from the rule-based strategies in ``trading_strategies``
+  * a small set of regime features (rolling vol, momentum, volume z-score,
+    time-of-day sin/cos)
+  * the Phase 1A intraday microstructure block from
+    ``ML_Classifier.microstructure_features`` (realized vol, signed-volume
+    absorption, bar-based OFI, optional cross-asset basis z-score, optional
+    L1-quote OFI, optional session-phase one-hots)
+
+It applies a gradient-boosted classifier with purged + embargoed
+walk-forward CV and emits +1/-1/0 trade signals via ``predict_meta_learner``.
+The microstructure parameter set is round-tripped through
+``inference_params`` so live inference reproduces training-time features
+even when callers omit those keys.
 
 Public API:
-    build_score_features(df, base_strategies, params)
+    build_score_features(df, base_strategies, params,
+                         cross_asset_bars=None, quotes=None)
     build_triple_barrier_labels(df, params)
-    train_stacked_meta_learner(df, params)
-    predict_meta_learner(df, trained, params)
+    train_stacked_meta_learner(df, params,
+                               cross_asset_bars=None, quotes=None)
+    predict_meta_learner(df, trained, params,
+                         cross_asset_bars=None, quotes=None)
 """
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -25,10 +38,53 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import accuracy_score, brier_score_loss
 
 import trading_strategies as strategies
+from ML_Classifier.microstructure_features import build_microstructure_features
 from ML_Classifier.ml_trading_persistence import save_training_artifacts
 
 
 _EPS = 1e-9
+
+# Params keys passed through to ML_Classifier.microstructure_features.
+# Centralized here so train/predict can round-trip them via inference_params.
+_MICROSTRUCTURE_PARAM_KEYS = (
+    "enable_microstructure",
+    "rv_window",
+    "rv_use_returns",
+    "rv_annualize",
+    "absorption_window",
+    "ofi_bar_window",
+    "ofi_quote_window",
+    "basis_window",
+    "session",
+    "tz",
+    "enable_basis",
+    "enable_quote_ofi",
+    "enable_session_phase",
+)
+
+_MICROSTRUCTURE_DEFAULTS = {
+    "enable_microstructure": True,
+    "rv_window": 30,
+    "absorption_window": 10,
+    "ofi_bar_window": 30,
+    "basis_window": 60,
+    # Cross-asset basis and session-phase one-hots are opt-in:
+    # basis requires a second instrument; session_phase overlaps with the
+    # tod_sin/tod_cos features already produced by _regime_features.
+    "enable_basis": False,
+    "enable_session_phase": False,
+    "enable_quote_ofi": False,
+}
+
+
+def _microstructure_params(params: dict) -> dict:
+    """Subset of ``params`` that is forwarded to ``build_microstructure_features``."""
+    out = dict(_MICROSTRUCTURE_DEFAULTS)
+    if params:
+        for key in _MICROSTRUCTURE_PARAM_KEYS:
+            if key in params:
+                out[key] = params[key]
+    return out
 
 
 # ----------------------------------------------------------------------
@@ -103,20 +159,44 @@ def build_score_features(
     df: pd.DataFrame,
     base_strategies: Iterable[dict],
     params: dict,
+    cross_asset_bars: Optional[pd.DataFrame] = None,
+    quotes: Optional[pd.DataFrame] = None,
 ) -> pd.DataFrame:
     """
     Build the meta-learner feature matrix.
 
-    Combines per-strategy continuous scores with regime context, then shifts
-    the entire frame by one bar so that no feature leaks information from
-    the bar a decision is made on.
+    Combines per-strategy continuous scores with regime context and the
+    intraday microstructure block (Phase 1A: realized vol, signed-volume
+    absorption, bar-based OFI, optional cross-asset basis z-score, optional
+    L1-quote OFI, optional session-phase one-hots). The whole frame is then
+    shifted by one bar so that no feature leaks information from the bar a
+    decision is made on.
+
+    ``cross_asset_bars`` is required to populate the basis z-score column
+    when ``enable_basis`` is true. ``quotes`` is required to populate the
+    true OFI column when ``enable_quote_ofi`` is true. Both are optional;
+    if absent the corresponding feature is simply omitted.
     """
     if df is None or df.empty:
         return pd.DataFrame(index=df.index if df is not None else [])
 
     score_df = _strategy_score_columns(df, base_strategies)
     regime_df = _regime_features(df, params)
-    feats = pd.concat([score_df, regime_df], axis=1)
+
+    blocks: List[pd.DataFrame] = [score_df, regime_df]
+
+    micro_params = _microstructure_params(params)
+    if micro_params.get("enable_microstructure", True):
+        micro_df = build_microstructure_features(
+            df,
+            micro_params,
+            cross_asset_bars=cross_asset_bars,
+            quotes=quotes,
+        )
+        if not micro_df.empty:
+            blocks.append(micro_df)
+
+    feats = pd.concat(blocks, axis=1)
     feats = feats.replace([np.inf, -np.inf], np.nan)
     feats = feats.shift(1)
     return feats
@@ -240,7 +320,12 @@ def _binary_up_labels(labels: pd.Series) -> pd.Series:
     return (labels > 0).astype(int)
 
 
-def train_stacked_meta_learner(df: pd.DataFrame, params: dict) -> dict:
+def train_stacked_meta_learner(
+    df: pd.DataFrame,
+    params: dict,
+    cross_asset_bars: Optional[pd.DataFrame] = None,
+    quotes: Optional[pd.DataFrame] = None,
+) -> dict:
     if df is None or df.empty:
         raise ValueError("Cannot train on empty data.")
 
@@ -248,7 +333,13 @@ def train_stacked_meta_learner(df: pd.DataFrame, params: dict) -> dict:
     if not base_strategies:
         raise ValueError("At least one base strategy is required.")
 
-    feats = build_score_features(df, base_strategies, params)
+    feats = build_score_features(
+        df,
+        base_strategies,
+        params,
+        cross_asset_bars=cross_asset_bars,
+        quotes=quotes,
+    )
     feats = feats.dropna()
     raw_labels = build_triple_barrier_labels(df, params)
     y = _binary_up_labels(raw_labels)
@@ -325,6 +416,13 @@ def train_stacked_meta_learner(df: pd.DataFrame, params: dict) -> dict:
         "session_minutes": int(params.get("session_minutes", 390)),
         "decision_threshold": threshold,
     }
+    inference_params.update(_microstructure_params(params))
+
+    # Snapshot of *what was trained on* (symbol / timeframe / dates / CA pair).
+    # The metalearner does not interpret these fields, it just round-trips them
+    # so the UI and any future strict-mode inference guard can validate that
+    # the model is being used in a context compatible with its training.
+    training_context = dict(params.get("training_context", {}) or {})
 
     result = {
         "type": "stacked_meta_learner",
@@ -341,6 +439,7 @@ def train_stacked_meta_learner(df: pd.DataFrame, params: dict) -> dict:
         "fold_metrics": fold_metrics,
         "metrics": metrics,
         "warmup_bars": warmup_bars,
+        "training_context": training_context,
     }
     version = save_training_artifacts(result)
     result["version"] = version
@@ -349,9 +448,10 @@ def train_stacked_meta_learner(df: pd.DataFrame, params: dict) -> dict:
 
 def _estimate_warmup(base_strategies: Iterable[dict], params: dict) -> int:
     """
-    Maximum lookback among base strategies plus ATR / regime windows, with
-    a small safety margin. Used as a guard in run_live_strategy so the
-    meta-learner is never invoked before features are populated.
+    Maximum lookback among base strategies plus ATR / regime / microstructure
+    windows, with a small safety margin. Used as a guard in
+    ``run_live_strategy`` so the meta-learner is never invoked before
+    features are populated.
     """
     candidates = [
         int(params.get("atr_window", 14)),
@@ -359,6 +459,17 @@ def _estimate_warmup(base_strategies: Iterable[dict], params: dict) -> int:
         15,  # vol_15_log
         10,  # mom_10_atr
     ]
+    micro = _microstructure_params(params)
+    if micro.get("enable_microstructure", True):
+        candidates.extend([
+            int(micro.get("rv_window", 30)),
+            int(micro.get("absorption_window", 10)),
+            int(micro.get("ofi_bar_window", 30)),
+        ])
+        if micro.get("enable_basis", False):
+            candidates.append(int(micro.get("basis_window", 60)))
+        if micro.get("enable_quote_ofi", False):
+            candidates.append(int(micro.get("ofi_quote_window", 100)))
     for spec in base_strategies:
         sp = spec.get("params", {}) or {}
         for key in ("long_window", "lookback", "distance", "short_window", "atr_window"):
@@ -375,8 +486,22 @@ def _estimate_warmup(base_strategies: Iterable[dict], params: dict) -> int:
 # ----------------------------------------------------------------------
 # Inference
 # ----------------------------------------------------------------------
-def predict_meta_learner(df: pd.DataFrame, trained: dict, params: dict) -> pd.DataFrame:
-    """Return prob_up / prob_down / score / signal for every aligned row."""
+def predict_meta_learner(
+    df: pd.DataFrame,
+    trained: dict,
+    params: dict,
+    cross_asset_bars: Optional[pd.DataFrame] = None,
+    quotes: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """Return prob_up / prob_down / score / signal for every aligned row.
+
+    Feature-builder params are reconstructed by merging the model's saved
+    ``inference_params`` over the caller-supplied ``params`` so the exact
+    same feature schema (windows, toggles, etc.) used during training is
+    reproduced at inference time. ``cross_asset_bars`` and ``quotes`` are
+    forwarded to :func:`build_score_features` for the basis-z and
+    quote-OFI features.
+    """
     if df is None or df.empty:
         return pd.DataFrame(index=df.index if df is not None else [])
 
@@ -384,7 +509,16 @@ def predict_meta_learner(df: pd.DataFrame, trained: dict, params: dict) -> pd.Da
     feature_cols: List[str] = trained.get("feature_columns", [])
     threshold = float(trained.get("decision_threshold", params.get("decision_threshold", 0.55)))
 
-    feats = build_score_features(df, base_strategies, params)
+    effective_params = dict(params or {})
+    effective_params.update(trained.get("inference_params", {}))
+
+    feats = build_score_features(
+        df,
+        base_strategies,
+        effective_params,
+        cross_asset_bars=cross_asset_bars,
+        quotes=quotes,
+    )
     if feature_cols:
         feats = feats.reindex(columns=feature_cols)
 

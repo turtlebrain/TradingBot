@@ -1,3 +1,5 @@
+from typing import Optional
+
 import trading_indicators as indicators
 import pandas as pd
 import numpy as np
@@ -243,13 +245,33 @@ strategy_scores = {
 # in its expected schema (price/high/low/volume + signal + auxiliary
 # probability columns).
 # --------------------------------------------------------------------
-def meta_learner_signals(data: pd.DataFrame, trained: dict, params: dict) -> pd.DataFrame:
+def meta_learner_signals(
+    data: pd.DataFrame,
+    trained: dict,
+    params: dict,
+    cross_asset_bars: Optional[pd.DataFrame] = None,
+    quotes: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    """Engine-facing adapter for the stacked meta-learner.
+
+    ``cross_asset_bars`` and ``quotes`` are forwarded verbatim to
+    :func:`predict_meta_learner`. The UI's ``build_signal_logic`` fetches the
+    cross-asset feed at *build time* and captures it in the signal_logic
+    closure, so this function stays a pure pass-through and the
+    ``trading_engine`` layer never has to learn about secondary feeds.
+    """
     if data is None or data.empty:
         return pd.DataFrame(index=data.index if data is not None else [])
 
     from ML_Classifier.stacked_meta_learner import predict_meta_learner
 
-    out = predict_meta_learner(data, trained, params)
+    out = predict_meta_learner(
+        data,
+        trained,
+        params,
+        cross_asset_bars=cross_asset_bars,
+        quotes=quotes,
+    )
 
     signals = pd.DataFrame(index=data.index)
     signals["price"] = data["close"]

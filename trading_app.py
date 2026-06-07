@@ -15,6 +15,7 @@ import risk_control as risk
 import trading_engine as engine
 import requests 
 import chartforgetk_wrapper as cftk_wrap
+import chart_performance as chart_perf
 import time
 import datetime
 import calendar
@@ -22,6 +23,7 @@ import threading
 import tick_streamer as qt_stream
 import strategy_tree_builder as stb
 import persistence as persist
+import timeframe_presets as tf_presets
 import tick_processor
 import queue
 import ML_Classifier.ml_trading_persistence as ml_persist
@@ -547,6 +549,11 @@ class TabbedWorkspaceFrame(ttk.Frame):
         tab_widget = self._create_tab_widget(label, closable)
         self.workspaces.append((workspace, tab_widget, chart, general_tab, strategy_tab, execution_tab))
 
+        # Align strategy-tab defaults with this chart's interval. Call the tab
+        # directly — during TradingStrategyFrame.__init__ the frame is not yet
+        # registered on controller.frames.
+        strategy_tab.apply_timeframe_presets(chart.time_interval)
+
         self.select_workspace(tab_widget)
         self._refresh_plus_button()
 
@@ -559,6 +566,12 @@ class TabbedWorkspaceFrame(ttk.Frame):
         lbl = ttk.Label(tab, text=title, width=6, anchor="center")
         lbl.pack(side="left")
         lbl.bind("<Button-1>", lambda e, t=tab: self.select_workspace(t))
+
+        # Keep references so we can re-render the title (e.g. prepend [CA])
+        # without losing the original base title.
+        tab.title_label = lbl
+        tab.base_title = title
+        tab.base_width = 6
 
         if closable:
             btn = ttk.Button(tab, text="✖", width=2, bootstyle=DANGER,
@@ -633,6 +646,13 @@ class TabbedWorkspaceFrame(ttk.Frame):
                 return execution_tab
         return None
 
+    def get_strategy_tab_for_chart(self, chart):
+        """Return the StrategyCollapsibleFrame tied to the workspace ``chart``."""
+        for workspace, tab, c, _, strategy_tab, _ in self.workspaces:
+            if c is chart:
+                return strategy_tab
+        return None
+
     def clear_active_chart(self):
         """Clear the chart in the currently active workspace."""
         if not self.active_workspace:
@@ -647,6 +667,62 @@ class TabbedWorkspaceFrame(ttk.Frame):
         """Clear charts in all workspaces."""
         for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
             chart.candle_chart.clear()
+
+    # --- Cross-asset workspace helpers ---
+    # A "cross-asset" workspace is a chart tab the user has flagged to be used
+    # as a second-symbol input (e.g. SPY when training MES) for strategies that
+    # consume cross_asset_bars. At most one workspace can be marked at a time,
+    # and the active (primary) workspace cannot reference itself.
+    def get_cross_asset_workspace(self):
+        """Return the (workspace, tab, chart, general_tab, strategy_tab, execution_tab)
+        tuple for the workspace currently marked as cross-asset, or None."""
+        for entry in self.workspaces:
+            _, _, chart, *_ = entry
+            var = getattr(chart, "cross_asset_var", None)
+            if var is not None and var.get():
+                return entry
+        return None
+
+    def get_cross_asset_chart(self):
+        entry = self.get_cross_asset_workspace()
+        return entry[2] if entry else None
+
+    def get_cross_asset_general_tab(self):
+        entry = self.get_cross_asset_workspace()
+        return entry[3] if entry else None
+
+    def clear_cross_asset_marks_except(self, chart_to_keep):
+        """Unmark cross-asset on every workspace except the one whose chart is
+        chart_to_keep. Used to enforce the one-at-a-time invariant whenever the
+        user flips the toggle on in a new workspace."""
+        for workspace, tab, chart, *_ in self.workspaces:
+            if chart is chart_to_keep:
+                continue
+            var = getattr(chart, "cross_asset_var", None)
+            if var is not None and var.get():
+                var.set(False)
+                self._set_tab_cross_asset_prefix(tab, False)
+
+    def set_cross_asset_prefix_for_chart(self, chart, mark_on):
+        """Update the tab label (add or remove the [CA] prefix) for the workspace
+        whose chart is the given one. Called by CandlestickChartFrame.toggle_cross_asset."""
+        for workspace, tab, c, *_ in self.workspaces:
+            if c is chart:
+                self._set_tab_cross_asset_prefix(tab, mark_on)
+                return
+
+    def _set_tab_cross_asset_prefix(self, tab_widget, mark_on):
+        """Idempotently add or remove the [CA] prefix on a tab label, widening
+        the label slot so the longer text doesn't get truncated."""
+        lbl = getattr(tab_widget, "title_label", None)
+        base_title = getattr(tab_widget, "base_title", None)
+        if lbl is None or base_title is None:
+            return
+        prefix = "[CA]"
+        new_text = f"{prefix}{base_title}" if mark_on else base_title
+        base_width = getattr(tab_widget, "base_width", 6)
+        new_width = max(len(new_text) + 1, base_width)
+        lbl.configure(text=new_text, width=new_width)
 
  
 class TradingStrategyFrame(ttk.Frame):
@@ -774,6 +850,20 @@ class TradingStrategyFrame(ttk.Frame):
                 "Loss" if amountused <= amounttotal else "Overdrawn"
             )
         )
+
+    def apply_timeframe_presets(self, timeframe, source_chart=None):
+        """Push timeframe-specific training + indicator defaults to one workspace.
+
+        Updates the Strategy tab tied to ``source_chart`` (or the active chart
+        when omitted). Called when a chart interval changes or a workspace is
+        first created.
+        """
+        chart = source_chart or self.top_tabs.get_active_chart()
+        if chart is None:
+            return
+        strategy_tab = self.top_tabs.get_strategy_tab_for_chart(chart)
+        if strategy_tab is not None:
+            strategy_tab.apply_timeframe_presets(timeframe)
     
     
     def set_active_account(self, account_meta):
@@ -825,65 +915,112 @@ class TradingStrategyFrame(ttk.Frame):
             )
 
                      
-    def search(self, show_output=True):  
-        stock_symbol = self.top_tabs.get_active_general_tab().stock_input.get().strip() 
-        start_date = self.top_tabs.get_active_general_tab().start_date_input.get_date().isoformat()
-        end_date = self.top_tabs.get_active_general_tab().end_date_input.get_date().isoformat()
-        if not stock_symbol or not start_date or not end_date:
+    def _normalize_candle_df(self, candle_data) -> pd.DataFrame:
+        """Normalize a raw broker candle payload (list of dicts) into a
+        DataFrame indexed by UTC timestamps and sorted ascending.
+
+        Shared between the primary search path and cross-asset fetches so
+        feature builders see the same shape regardless of which workspace
+        the candles came from. Returns an empty DataFrame when the payload
+        itself is empty; raises ValueError when the payload is non-empty
+        but cannot be normalized (missing or unparseable timestamp column)
+        so callers can surface the specific failure to the user.
+        """
+        candle_df = pd.DataFrame(candle_data)
+        if candle_df.empty:
+            return candle_df
+
+        timestamp_col = None
+        for candidate in ("start", "startTime", "date", "timestamp", "time"):
+            if candidate in candle_df.columns:
+                timestamp_col = candidate
+                break
+        if timestamp_col is None:
+            raise ValueError(
+                "Candle data is missing a timestamp field. "
+                f"Available fields: {list(candle_df.columns)}"
+            )
+
+        candle_df["timestamp"] = pd.to_datetime(
+            candle_df[timestamp_col], utc=True, errors="coerce"
+        )
+        candle_df = candle_df.dropna(subset=["timestamp"])
+        if candle_df.empty:
+            raise ValueError("Unable to parse candle timestamps from broker response.")
+
+        candle_df.set_index("timestamp", inplace=True)
+        candle_df.sort_index(inplace=True)
+        return candle_df
+
+    def search(self, show_output=True, workspace=None):
+        """Fetch candles for a workspace and return a normalized DataFrame.
+
+        workspace=None  -> use the active workspace (existing behaviour).
+        workspace=<tuple from TabbedWorkspaceFrame> -> use that workspace's
+            general tab (symbol/dates) and chart (timeframe). This is how
+            cross-asset fetches read from an inactive tab without forcing
+            the user to switch tabs.
+
+        The chart attached to the chosen workspace is redrawn only when
+        show_output is True. Returns an empty DataFrame on any failure
+        (and surfaces the failure via a dialog), so callers can simply
+        check ``.empty``.
+        """
+        if workspace is None:
+            general_tab = self.top_tabs.get_active_general_tab()
+            chart = self.top_tabs.get_active_chart()
+        else:
+            _, _, chart, general_tab, *_ = workspace
+
+        if general_tab is None or chart is None:
+            messagebox.showerror("Internal Error", "Could not resolve target workspace.")
+            return pd.DataFrame()
+
+        stock_symbol = general_tab.stock_input.get().strip()
+        start_date_obj = general_tab.start_date_input.get_date()
+        end_date_obj = general_tab.end_date_input.get_date()
+        if not stock_symbol or start_date_obj is None or end_date_obj is None:
             messagebox.showwarning("Input Error", "Please enter a valid stock symbol as query.")
-            return
-        # API Search
+            return pd.DataFrame()
+
         my_access_token = self.controller.frames[AuthFrame].access_token
-        my_api_server = self.controller.frames[AuthFrame].api_server  
+        my_api_server = self.controller.frames[AuthFrame].api_server
         if not my_access_token and not my_api_server:
             print("No access token found, please log in and authenticate first")
-            return   
-        try:   
+            return pd.DataFrame()
+
+        try:
             symbol_data = self.controller.broker.get_symbols(query=stock_symbol)
             if not symbol_data:
                 print("No data found for:", stock_symbol)
-                return
+                return pd.DataFrame()
             symbol_id = symbol_data[0]['symbolId']
-            active_chart = self.top_tabs.get_active_chart()
             candle_data = self.controller.broker.get_candles(
-                symbol=symbol_id, 
-                start=self.top_tabs.get_active_general_tab().start_date_input.get_date(), 
-                end=self.top_tabs.get_active_general_tab().end_date_input.get_date(),
-                interval= active_chart.time_interval
+                symbol=symbol_id,
+                start=start_date_obj,
+                end=end_date_obj,
+                interval=chart.time_interval,
             )
-            candle_data_pd = pd.DataFrame(candle_data)
-            if candle_data_pd.empty:
-                messagebox.showwarning("No Data", "No candle data returned for the selected range.")
-                return
 
-            # Normalize timestamp across broker formats.
-            timestamp_col = None
-            for candidate in ("start", "startTime", "date", "timestamp", "time"):
-                if candidate in candle_data_pd.columns:
-                    timestamp_col = candidate
-                    break
+            try:
+                candle_df = self._normalize_candle_df(candle_data)
+            except ValueError as parse_err:
+                messagebox.showerror("Data Error", str(parse_err))
+                return pd.DataFrame()
 
-            if timestamp_col is None:
-                messagebox.showerror(
-                    "Data Error",
-                    f"Candle data is missing a timestamp field. Available fields: {list(candle_data_pd.columns)}"
+            if candle_df.empty:
+                messagebox.showwarning(
+                    "No Data",
+                    f"No candle data returned for {stock_symbol} in the selected range."
                 )
-                return
+                return candle_df
 
-            candle_data_pd["timestamp"] = pd.to_datetime(candle_data_pd[timestamp_col], utc=True, errors="coerce")
-            candle_data_pd = candle_data_pd.dropna(subset=["timestamp"])
-            if candle_data_pd.empty:
-                messagebox.showerror("Data Error", "Unable to parse candle timestamps from broker response.")
-                return
-            # Set index
-            candle_data_pd.set_index("timestamp", inplace=True)
-            candle_data_pd.sort_index(inplace=True)
             if show_output:
-                # Plot candlestick chart
-                active_chart.update_chart(candle_data_pd)
-            return candle_data
+                chart.update_chart(candle_df)
+            return candle_df
         except requests.exceptions.HTTPError as err:
-            messagebox.showerror("Error", f"HTTP error occurered {err}")           
+            messagebox.showerror("Error", f"HTTP error occurered {err}")
+            return pd.DataFrame()
 
     
     def is_input_valid_float(self, input, name):
@@ -1054,14 +1191,43 @@ class CandlestickChartFrame(ttk.Frame):
             offvalue=False
         )
         self.show_label_toggle.grid(row=0, column=1, sticky="nsew")
-        
-        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 1075, height = 430)
-        self.candle_chart.grid(row=1, column=0, columnspan=4, sticky="nsew")
+
+        # Cross-asset toggle: flags this workspace as the secondary symbol for
+        # strategies that consume cross_asset_bars (e.g. SPY basis for MES).
+        # Mutually exclusive with live mode and one-at-a-time across workspaces.
+        self.cross_asset_var = tk.BooleanVar(value=False)
+        self.cross_asset_toggle = ttkb.Checkbutton(
+            self,
+            text="Mark as cross-asset",
+            variable=self.cross_asset_var,
+            command=self.toggle_cross_asset,
+            bootstyle="info-round-toggle"
+        )
+        self.cross_asset_toggle.grid(row=0, column=2, sticky="nsew")
+
+        viewport_frame = ttk.Frame(self)
+        viewport_frame.grid(row=0, column=3, columnspan=2, sticky="ew", padx=(8, 0))
+        ttk.Label(viewport_frame, text="Visible bars:").pack(side="left", padx=(0, 4))
+        self.visible_mode_var = tk.StringVar(value="500")
+        self.visible_mode_combo = ttk.Combobox(
+            viewport_frame,
+            textvariable=self.visible_mode_var,
+            values=["500", "1000", "All"],
+            width=8,
+            state="readonly",
+        )
+        self.visible_mode_combo.pack(side="left")
+        self.visible_mode_combo.bind("<<ComboboxSelected>>", self._on_viewport_change)
+        ttk.Button(viewport_frame, text="◀", width=3, command=self._scroll_chart_left).pack(side="left", padx=(6, 2))
+        ttk.Button(viewport_frame, text="▶", width=3, command=self._scroll_chart_right).pack(side="left")
+
+        self.candle_chart = cftk_wrap.CandlestickChartNoLabels(self, width = 1075, height = 415)
+        self.candle_chart.grid(row=1, column=0, columnspan=5, sticky="nsew")
         
         self.timeframe_options = ["OneMinute", "OneHour", "OneDay", "OneWeek"]
         self.time_interval = "OneDay"
         control_frame = ttk.Frame(self)
-        control_frame.grid(row=2, column=0, columnspan=4, sticky="ew")
+        control_frame.grid(row=2, column=0, columnspan=5, sticky="ew")
         control_frame.grid_rowconfigure(0, weight=0)
         for i in range(len(self.timeframe_options)):
             control_frame.grid_columnconfigure(i, weight=1)
@@ -1076,9 +1242,25 @@ class CandlestickChartFrame(ttk.Frame):
         self.streamer = None
         self.candle_aggregator = None
         self._poll_job = None
+        self._update_job = None
+        self._full_df = pd.DataFrame()
+        self._view_start = 0
+        self._last_rendered_len = None
+        self._chart_title = ""
     
     def toggle_live_mode(self):
-        if self.live_switch_var.get(): 
+        if self.live_switch_var.get():
+            # A workspace flagged as cross-asset is treated as a read-only
+            # secondary input; live streaming would mutate its candles and
+            # contaminate the primary strategy's feature build.
+            if self.cross_asset_var.get():
+                messagebox.showwarning(
+                    "Live mode unavailable",
+                    "This workspace is marked as cross-asset. "
+                    "Unmark it before enabling live mode."
+                )
+                self.live_switch_var.set(False)
+                return
             self.tick_queue = queue.Queue()
             auth_frame = self.controller.frames[AuthFrame]
             self.streamer = qt_stream.QuestradeStreamer(
@@ -1107,7 +1289,30 @@ class CandlestickChartFrame(ttk.Frame):
             self.tick_queue = None
             for rb in self.timeframe_buttons:
                 rb.config(state=tk.NORMAL)
-    
+
+    def toggle_cross_asset(self):
+        """Flip this workspace's cross-asset flag and keep the workspace tabs
+        in sync (one-at-a-time, [CA] prefix on the tab label).
+
+        Tk fires the ``command`` after the BooleanVar has already been flipped,
+        so ``cross_asset_var.get()`` reflects the *target* state."""
+        top_tabs = self.controller.frames[TradingStrategyFrame].top_tabs
+        if self.cross_asset_var.get():
+            # Block when live: streaming would mutate the bars we want to use
+            # as a stable secondary input.
+            if self.live_switch_var.get():
+                messagebox.showwarning(
+                    "Cross-asset unavailable",
+                    "Disable live mode before marking this workspace as cross-asset."
+                )
+                self.cross_asset_var.set(False)
+                return
+            # Enforce one cross-asset workspace at a time.
+            top_tabs.clear_cross_asset_marks_except(self)
+            top_tabs.set_cross_asset_prefix_for_chart(self, True)
+        else:
+            top_tabs.set_cross_asset_prefix_for_chart(self, False)
+
     def shutdown(self):
         """Gracefully stop live streaming and background jobs."""
         if self.live_switch_var.get():
@@ -1156,20 +1361,95 @@ class CandlestickChartFrame(ttk.Frame):
             self.candle_chart.show_labels = False
         self.candle_chart.redraw()
             
+    def _max_draw_bars(self):
+        return max(100, self.candle_chart.width - 2 * self.candle_chart.padding)
+
+    def _window_size_from_mode(self):
+        mode = self.visible_mode_var.get()
+        if mode == "All":
+            return None
+        return int(mode)
+
+    def _prepare_display_df(self, df):
+        self._full_df = df.copy()
+        window_size = self._window_size_from_mode()
+        if window_size is None:
+            self._view_start = 0
+        else:
+            max_start = max(0, len(self._full_df) - window_size)
+            if self._view_start > max_start:
+                self._view_start = max_start
+        display_df, self._view_start = chart_perf.prepare_ohlc_for_display(
+            self._full_df,
+            window_size,
+            self._view_start,
+            self._max_draw_bars(),
+        )
+        return display_df
+
+    def _on_viewport_change(self, _event=None):
+        if self._full_df.empty:
+            return
+        if self.visible_mode_var.get() != "All":
+            window_size = self._window_size_from_mode()
+            self._view_start = max(0, len(self._full_df) - window_size)
+        self.update_chart(self._full_df, force_full=True)
+
+    def _scroll_chart_left(self):
+        if self._full_df.empty or self.visible_mode_var.get() == "All":
+            return
+        step = max(1, self._window_size_from_mode() // 4)
+        self._view_start = max(0, self._view_start - step)
+        self.update_chart(self._full_df, force_full=True)
+
+    def _scroll_chart_right(self):
+        if self._full_df.empty or self.visible_mode_var.get() == "All":
+            return
+        window_size = self._window_size_from_mode()
+        step = max(1, window_size // 4)
+        max_start = max(0, len(self._full_df) - window_size)
+        self._view_start = min(max_start, self._view_start + step)
+        self.update_chart(self._full_df, force_full=True)
+
     def convert_data_for_chart(self, df):
-        # Ensure index is reset so we can enumerate
-        df = df.reset_index(drop=True)
-        # Create list of tuples: (index, open, high, low, close)
-        return [
-            (i, float(row['open']), float(row['high']), float(row['low']), float(row['close']))
-            for i, row in df.iterrows()
-        ]
-    
-    def update_chart(self, df, animate_last_only = False):
+        n = len(df)
+        if n == 0:
+            return []
+        idx = range(n)
+        opens = df["open"].to_numpy(dtype=float)
+        highs = df["high"].to_numpy(dtype=float)
+        lows = df["low"].to_numpy(dtype=float)
+        closes = df["close"].to_numpy(dtype=float)
+        return list(zip(idx, opens, highs, lows, closes))
+
+    def update_chart(self, df, animate_last_only=False, force_full=False):
+        if force_full or not animate_last_only:
+            if self.visible_mode_var.get() != "All":
+                window_size = self._window_size_from_mode()
+                if self._full_df.empty or len(df) != len(self._full_df):
+                    self._view_start = max(0, len(df) - window_size)
+
+        display_df = self._prepare_display_df(df)
+        if display_df.empty:
+            return
+
+        chart_data = self.convert_data_for_chart(display_df)
+        title = self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip()
+        self._chart_title = title
+
+        if (
+            animate_last_only
+            and not force_full
+            and self._last_rendered_len == len(display_df)
+            and chart_data
+            and self.candle_chart.update_last_candle(chart_data[-1], len(chart_data) - 1)
+        ):
+            return
+
         self.candle_chart.clear()
-        self.candle_chart.timestamps = list(df.index)
-        self.candle_chart.plot(self.convert_data_for_chart(df), 
-                               self.controller.frames[TradingStrategyFrame].top_tabs.get_active_general_tab().stock_input.get().strip(), animate_last_only)
+        self.candle_chart.timestamps = list(display_df.index)
+        self.candle_chart.plot(chart_data, title, animate_last_only)
+        self._last_rendered_len = len(display_df)
         
     def periodically_update_chart(self):
         candles_df = self.candle_aggregator.get_candles()
@@ -1211,7 +1491,8 @@ class CandlestickChartFrame(ttk.Frame):
     def on_timeframe_change(self, value):
         self.time_interval = value
         trading_frame = self.controller.frames[TradingStrategyFrame]
-        trading_frame.search(show_output=True)       
+        trading_frame.apply_timeframe_presets(value, source_chart=self)
+        trading_frame.search(show_output=True)
                            
 class BackTestingResultsFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -1302,9 +1583,11 @@ class BackTestingResultsFrame(ttk.Frame):
         acc_id = int(self.controller.frames[TradingStrategyFrame].active_account.name)
         trade_session = persist.load_trade_sessions(acc_id).loc[session_id]
         self.results_chart.results = trade_stream
-        self.results_chart.stock_symbol = trade_session['symbol'] if not trade_session.empty else ""      
-        self.result_settings_tab.populate_result_text(self.result_settings_tab.get_result_summary(trade_stream))   
-        self.results_chart.update_chart() 
+        self.results_chart.stock_symbol = trade_session['symbol'] if not trade_session.empty else ""
+        self.results_chart._view_start = 0
+        self.results_chart._full_results = pd.DataFrame()
+        self.result_settings_tab.populate_result_text(self.result_settings_tab.get_result_summary(trade_stream))
+        self.results_chart.update_chart()
         
     def create_session_card(self, parent, session_id, timestamp, stream_type):
         card = tk.Frame(parent, bg="#2e3e4e", padx=10, pady=5)
@@ -1358,6 +1641,9 @@ class ResultChartFrame(ttk.Frame):
         self.result_var = result_var
         self.result_var.trace_add("write", self.update_chart)    
         self.stock_symbol = ""
+        self._full_results = pd.DataFrame()
+        self._view_start = 0
+        self.chart = None
         # Show labels toggle
         self.show_label_var = tk.BooleanVar(value=False)
         self.show_label_toggle = ttk.Checkbutton(
@@ -1367,6 +1653,23 @@ class ResultChartFrame(ttk.Frame):
             command=self.toggle_show_label
         )
         self.show_label_toggle.grid(row=0, column=0, sticky="nsew")
+
+        viewport_frame = ttk.Frame(self)
+        viewport_frame.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        ttk.Label(viewport_frame, text="Visible bars:").pack(side="left", padx=(0, 4))
+        self.visible_mode_var = tk.StringVar(value="500")
+        self.visible_mode_combo = ttk.Combobox(
+            viewport_frame,
+            textvariable=self.visible_mode_var,
+            values=["500", "1000", "All"],
+            width=8,
+            state="readonly",
+        )
+        self.visible_mode_combo.pack(side="left")
+        self.visible_mode_combo.bind("<<ComboboxSelected>>", self._on_viewport_change)
+        ttk.Button(viewport_frame, text="◀", width=3, command=self._scroll_chart_left).pack(side="left", padx=(6, 2))
+        ttk.Button(viewport_frame, text="▶", width=3, command=self._scroll_chart_right).pack(side="left")
+
         self.create_chart(self.show_label)
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
@@ -1385,13 +1688,108 @@ class ResultChartFrame(ttk.Frame):
     
     def create_chart(self, show_labels=False):
         self.chart = cftk_wrap.LineChartNoLabels(self, width=800, show_labels=show_labels, height=450)
-        self.chart.grid(row=1, column=0, sticky="nsew")
+        self.chart.grid(row=1, column=0, columnspan=2, sticky="nsew")
         return self.chart
-    
-    def _extract_timestamps(self, index):
-        """Convert a DataFrame index to a list of timestamps for chart labeling."""
+
+    def _max_draw_points(self):
+        if self.chart is None:
+            return 800
+        return max(100, self.chart.width - 2 * self.chart.padding)
+
+    def _window_size_from_mode(self):
+        mode = self.visible_mode_var.get()
+        if mode == "All":
+            return None
+        return int(mode)
+
+    def _prepare_display_results(self, df):
+        self._full_results = df.copy()
+        window_size = self._window_size_from_mode()
+        if window_size is None:
+            self._view_start = 0
+        else:
+            max_start = max(0, len(self._full_results) - window_size)
+            if self._view_start > max_start:
+                self._view_start = max_start
+        visible, self._view_start = chart_perf.slice_visible_window(
+            self._full_results,
+            window_size,
+            self._view_start,
+        )
+        return visible
+
+    def _on_viewport_change(self, _event=None):
+        if self._full_results.empty:
+            return
+        if self.visible_mode_var.get() != "All":
+            window_size = self._window_size_from_mode()
+            self._view_start = max(0, len(self._full_results) - window_size)
+        self.update_chart()
+
+    def _scroll_chart_left(self):
+        if self._full_results.empty or self.visible_mode_var.get() == "All":
+            return
+        step = max(1, self._window_size_from_mode() // 4)
+        self._view_start = max(0, self._view_start - step)
+        self.update_chart()
+
+    def _scroll_chart_right(self):
+        if self._full_results.empty or self.visible_mode_var.get() == "All":
+            return
+        window_size = self._window_size_from_mode()
+        step = max(1, window_size // 4)
+        max_start = max(0, len(self._full_results) - window_size)
+        self._view_start = min(max_start, self._view_start + step)
+        self.update_chart()
+
+    def _labels_for_rows(self, df, row_index):
+        """Return x-axis labels aligned with ``row_index``; never treat row ids as epoch times."""
+        if df is None or df.empty:
+            return None
+
+        row_index = pd.Index(row_index)
+
+        if "ts" in df.columns:
+            ts = pd.to_datetime(df.loc[row_index, "ts"], errors="coerce")
+            if ts.notna().any():
+                if len(ts) <= 1 or ts.dropna().nunique() > 1:
+                    return list(ts)
+
+        subset_index = df.loc[row_index].index
+        if isinstance(subset_index, pd.DatetimeIndex):
+            return list(subset_index)
+
+        if pd.api.types.is_integer_dtype(subset_index):
+            return None
+
         try:
-            return list(pd.to_datetime(index))
+            parsed = pd.to_datetime(subset_index, errors="coerce")
+            if parsed.notna().all():
+                return list(parsed)
+        except Exception:
+            pass
+        return None
+
+    def _series_for_chart(self, y_values, df, row_index):
+        """Return y values and matching timestamps, downsampled when needed."""
+        max_points = self._max_draw_points()
+        raw_labels = self._labels_for_rows(df, row_index)
+        if len(y_values) <= max_points:
+            return y_values, raw_labels
+        y_out, idx_out = chart_perf.downsample_line_with_index(y_values, raw_labels, max_points)
+        if idx_out is not None:
+            idx_out = list(pd.to_datetime(idx_out, errors="coerce"))
+        return y_out, idx_out
+
+    def _extract_timestamps(self, index):
+        """Convert labels to datetimes; ignore plain integer indices (row ids)."""
+        if index is None:
+            return None
+        try:
+            idx = pd.Index(index)
+            if pd.api.types.is_integer_dtype(idx):
+                return None
+            return list(pd.to_datetime(index, errors="coerce"))
         except Exception:
             return None
 
@@ -1399,40 +1797,60 @@ class ResultChartFrame(ttk.Frame):
         if self.results.empty:
             return
 
-        selected = self.result_var.get()
+        if self.chart is None:
+            self.create_chart(show_labels=self.show_label)
+        else:
+            self.chart.show_labels = self.show_label
 
-        # Always reset chart before plotting
-        self.reset_chart()
-        chart = self.create_chart(show_labels=self.show_label)
+        if self.visible_mode_var.get() != "All":
+            window_size = self._window_size_from_mode()
+            if self._full_results.empty or len(self.results) != len(self._full_results):
+                self._view_start = max(0, len(self.results) - window_size)
+
+        selected = self.result_var.get()
+        display_results = self._prepare_display_results(self.results)
+        chart = self.chart
         chart.title = self.stock_symbol
         series_list = self.controller.frames[BackTestingResultsFrame].result_settings_tab.selected_series
 
         if series_list:
             datasets = []
-            common_valid = pd.Series(True, index=self.results.index)
+            common_valid = pd.Series(True, index=display_results.index)
             for series in series_list:
-                if series in self.results.columns:
-                    common_valid &= pd.to_numeric(self.results[series], errors="coerce").notna()
+                if series in display_results.columns:
+                    common_valid &= pd.to_numeric(display_results[series], errors="coerce").notna()
 
-            filtered = self.results.loc[common_valid]
-            chart.timestamps = self._extract_timestamps(filtered.index)
+            filtered = display_results.loc[common_valid]
+            chart_timestamps = None
 
             for series in series_list:
                 if series in filtered.columns:
-                    y_values = pd.to_numeric(filtered[series], errors="coerce").tolist()
+                    numeric = pd.to_numeric(filtered[series], errors="coerce").dropna()
+                    y_values = numeric.tolist()
                     if y_values:
+                        y_values, timestamps = self._series_for_chart(
+                            y_values, filtered, numeric.index
+                        )
+                        if chart_timestamps is None:
+                            chart_timestamps = timestamps
                         datasets.append({
                             'data': y_values,
                             'label': series
                         })
 
             if datasets:
+                chart.timestamps = chart_timestamps
+                chart.clear()
                 chart.plot(datasets)
         else:
-            numeric = pd.to_numeric(self.results[selected], errors="coerce").dropna()
-            chart.timestamps = self._extract_timestamps(numeric.index)
+            numeric = pd.to_numeric(display_results[selected], errors="coerce").dropna()
             y_values = numeric.tolist()
             if y_values:
+                y_values, timestamps = self._series_for_chart(
+                    y_values, display_results, numeric.index
+                )
+                chart.timestamps = timestamps
+                chart.clear()
                 chart.plot(y_values)
 
                     
@@ -1527,50 +1945,47 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 
     ``build_signal_logic`` is the integration point with the backtest and
     live engines; it returns the meta-learner adapter as a single callable.
-    """
 
-    DEFAULT_TRAINING_PARAMS = {
-        "horizon": 10,
-        "up_barrier_atr": 1.5,
-        "down_barrier_atr": 1.5,
-        "vertical_bars": 10,
-        "embargo": 10,
-        "calibration": "isotonic",
-        "decision_threshold": 0.55,
-        "n_splits": 5,
-        "learning_rate": 0.05,
-        "cost_bp": 5.0,
-        "atr_window": 14,
-    }
+    Training and indicator defaults are keyed by chart timeframe; see
+    ``timeframe_presets.py``. ``apply_timeframe_presets`` is invoked when the
+    user switches interval or opens a new workspace tab.
+    """
 
     def __init__(self, parent, controller):
         super().__init__(parent, title="Strategy")
         self.controller = controller
 
         self.meta_model_result = None
+        self._current_timeframe = tf_presets.DEFAULT_TIMEFRAME
+
+        initial_training = tf_presets.get_training_presets(self._current_timeframe)
 
         # Training params backed by Tk variables so the dialog edits persist.
         self._training_vars = {
-            "horizon": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["horizon"]),
-            "up_barrier_atr": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["up_barrier_atr"]),
-            "down_barrier_atr": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["down_barrier_atr"]),
-            "vertical_bars": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["vertical_bars"]),
-            "embargo": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["embargo"]),
-            "calibration": tk.StringVar(value=self.DEFAULT_TRAINING_PARAMS["calibration"]),
-            "decision_threshold": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["decision_threshold"]),
-            "n_splits": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["n_splits"]),
-            "learning_rate": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["learning_rate"]),
-            "cost_bp": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["cost_bp"]),
-            "atr_window": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["atr_window"]),
+            "horizon": tk.IntVar(value=initial_training["horizon"]),
+            "up_barrier_atr": tk.DoubleVar(value=initial_training["up_barrier_atr"]),
+            "down_barrier_atr": tk.DoubleVar(value=initial_training["down_barrier_atr"]),
+            "vertical_bars": tk.IntVar(value=initial_training["vertical_bars"]),
+            "embargo": tk.IntVar(value=initial_training["embargo"]),
+            "calibration": tk.StringVar(value=initial_training["calibration"]),
+            "decision_threshold": tk.DoubleVar(value=initial_training["decision_threshold"]),
+            "n_splits": tk.IntVar(value=initial_training["n_splits"]),
+            "learning_rate": tk.DoubleVar(value=initial_training["learning_rate"]),
+            "cost_bp": tk.DoubleVar(value=initial_training["cost_bp"]),
+            "atr_window": tk.IntVar(value=initial_training["atr_window"]),
         }
 
         self._build_strategy_panel()
 
     def _build_strategy_panel(self):
+        self.scrolled_panel = ScrolledFrame(self.content, autohide=True, bootstyle="round")
+        self.scrolled_panel.pack(fill="both", expand=True)
+        panel = self.scrolled_panel
+
         # --- Base Strategies picker ---
         strategy_list = list(strategies.trading_strategies.keys())
         self.base_section = stb.StrategySection(
-            self.content,
+            panel,
             title="Base Strategies",
             strategies=strategy_list,
             strategy_param_getter=self.get_strategy_params,
@@ -1578,7 +1993,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.base_section.pack(fill="x", pady=5)
 
         # --- Train + Params button row ---
-        btn_row = ttk.Frame(self.content)
+        btn_row = ttk.Frame(panel)
         btn_row.pack(fill="x", pady=5)
 
         ttk.Button(
@@ -1591,7 +2006,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         ).pack(side="left")
 
         # --- Model Version Selector ---
-        version_row = ttk.Frame(self.content)
+        version_row = ttk.Frame(panel)
         version_row.pack(fill="x", pady=5)
 
         ttk.Label(version_row, text="Model Version:", width=12, anchor="w").pack(side="left", padx=(5, 5))
@@ -1607,9 +2022,13 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.version_dropdown.bind("<<ComboboxSelected>>", self.on_version_selected)
 
         # --- Training Results ---
-        self.results_frame = ttk.LabelFrame(self.content, text="Training Results")
+        self.results_frame = ttk.LabelFrame(panel, text="Training Results")
         self.results_frame.pack(fill="x", pady=5)
 
+        # Metrics laid out as one row per metric inside a grid so we always fit
+        # within the narrow sidebar width regardless of value length: the metric
+        # name is pinned to the left, the value to the right, and the row
+        # stretches to whatever width the LabelFrame happens to be.
         self.result_labels = {}
         metric_keys = [
             ("trade_rate", "Trade rate"),
@@ -1619,30 +2038,78 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             ("calibration_mae", "Calib MAE"),
             ("accuracy", "Accuracy"),
         ]
-        for i in range(0, len(metric_keys), 2):
-            row = ttk.Frame(self.results_frame)
-            row.pack(anchor="center", pady=2)
-            for key, label_text in metric_keys[i:i + 2]:
-                lbl = ttk.Label(row, text=f"{label_text}: ---", width=20, anchor="w")
-                lbl.pack(side="left", padx=10)
-                self.result_labels[key] = lbl
+        metrics_block = ttk.Frame(self.results_frame)
+        metrics_block.pack(fill="x", padx=5, pady=2)
+        metrics_block.columnconfigure(0, weight=1)
+        metrics_block.columnconfigure(1, weight=0)
+        for i, (key, label_text) in enumerate(metric_keys):
+            ttk.Label(metrics_block, text=label_text, anchor="w").grid(
+                row=i, column=0, sticky="ew", padx=(5, 4), pady=1
+            )
+            value_lbl = ttk.Label(metrics_block, text="---", anchor="e")
+            value_lbl.grid(row=i, column=1, sticky="e", padx=(4, 5), pady=1)
+            self.result_labels[key] = value_lbl
+
+        # "Trained on" describes the saved model's training context (primary
+        # symbol/timeframe/date range). Filled in from artifact metadata when a
+        # version is selected, or from the current workspace when training runs.
+        # wraplength lets the long combined string flow onto a second line
+        # instead of clipping against the sidebar's right edge.
+        self.trained_on_label = ttk.Label(
+            self.results_frame,
+            text="Trained on: ---",
+            anchor="w",
+            justify="left",
+            wraplength=220,
+        )
+        self.trained_on_label.pack(fill="x", padx=10, pady=(6, 0))
+
+        # Cross-asset status: tells the user whether the last training run used a
+        # cross-asset secondary feed and how many bars overlapped after alignment.
+        # Stays blank until on_train_model populates it via show_training_results.
+        self.cross_asset_status_label = ttk.Label(
+            self.results_frame,
+            text="Cross-asset: none",
+            anchor="w",
+            justify="left",
+            wraplength=220,
+        )
+        self.cross_asset_status_label.pack(fill="x", padx=10, pady=(0, 2))
 
         # Populate model versions only after result labels are initialized,
         # because selection can immediately trigger result rendering.
         self.populate_version_selector()
 
     # ------------------------------------------------------------------
+    # Timeframe-aware defaults (see timeframe_presets.py)
+    # ------------------------------------------------------------------
+    def apply_timeframe_presets(self, timeframe: str) -> None:
+        """Load training + indicator defaults for ``timeframe`` into this panel."""
+        tf = tf_presets.normalize_timeframe(timeframe)
+        self._current_timeframe = tf
+
+        training = tf_presets.get_training_presets(tf)
+        for key, var in self._training_vars.items():
+            if key not in training:
+                continue
+            value = training[key]
+            if isinstance(var, tk.StringVar):
+                var.set(str(value))
+            elif isinstance(var, tk.DoubleVar):
+                var.set(float(value))
+            else:
+                var.set(int(value))
+
+        if hasattr(self, "base_section"):
+            self.base_section.apply_indicator_presets(
+                tf_presets.get_all_indicator_presets(tf)
+            )
+
+    # ------------------------------------------------------------------
     # Default per-strategy parameters surfaced by the StrategySection picker.
     # ------------------------------------------------------------------
     def get_strategy_params(self, name):
-        default_params = {
-            "DMA Crossing": {"short_window": 20, "long_window": 50},
-            "S/R Structure": {"distance": 5},
-            "RSI": {"lookback": 14, "overbought": 70, "oversold": 30},
-            "EMA Break": {"short_window": 20, "long_window": 50},
-            "VWAP Break": {"lookback": 14},
-        }
-        return default_params.get(name, {})
+        return tf_presets.get_indicator_presets(self._current_timeframe, name)
 
     # ------------------------------------------------------------------
     # Version selector
@@ -1679,7 +2146,23 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         except FileNotFoundError:
             self.meta_model_result = None
             return
-        self.show_training_results(self.meta_model_result.get("metrics", {}))
+
+        # Hydrate the status labels from the saved training context. Older
+        # artifacts (trained before Option C landed) simply lack the field;
+        # .get() returns {} and the labels fall back to their default text.
+        ctx = self.meta_model_result.get("training_context") or {}
+        ca_info = None
+        if ctx.get("cross_asset_symbol"):
+            ca_info = {
+                "symbol": ctx["cross_asset_symbol"],
+                "aligned_bars": ctx.get("cross_asset_aligned_bars"),
+                # primary_bars absent on load: show "trained with N aligned bars"
+            }
+        self.show_training_results(
+            self.meta_model_result.get("metrics", {}),
+            cross_asset_info=ca_info,
+            training_context=ctx,
+        )
 
     # ------------------------------------------------------------------
     # Training
@@ -1698,27 +2181,166 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             )
             return
 
+        ts_frame = self.controller.frames[TradingStrategyFrame]
+        top_tabs = ts_frame.top_tabs
+
+        primary_general = top_tabs.get_active_general_tab()
+        primary_chart = top_tabs.get_active_chart()
+        if primary_general is None or primary_chart is None:
+            messagebox.showerror("Train Model", "No active workspace.")
+            return
+        primary_symbol = primary_general.stock_input.get().strip()
+
+        # Cross-asset detection runs BEFORE any network calls so we can surface
+        # a clear validation error without burning a broker fetch.
+        ca_entry = top_tabs.get_cross_asset_workspace()
+        ca_symbol = None
+        if ca_entry is not None:
+            _, _, ca_chart, ca_general, *_ = ca_entry
+            ca_symbol = ca_general.stock_input.get().strip()
+
+            if not ca_symbol:
+                messagebox.showwarning(
+                    "Train Model",
+                    "Cross-asset workspace has no symbol. Enter one or unmark "
+                    "cross-asset before training.",
+                )
+                return
+
+            # Self-reference would collapse the basis z-score to a constant
+            # (log(price/price) == 0), giving the model a useless feature.
+            if ca_symbol.upper() == primary_symbol.upper():
+                messagebox.showwarning(
+                    "Train Model",
+                    f"Cross-asset workspace references the same symbol as the primary "
+                    f"('{primary_symbol}'). Change the cross-asset symbol or unmark "
+                    f"cross-asset before training.",
+                )
+                return
+
+            # Different timeframes would produce a sparse intersection and a
+            # basis series full of NaNs; force the user to match them.
+            if ca_chart.time_interval != primary_chart.time_interval:
+                messagebox.showwarning(
+                    "Train Model",
+                    f"Cross-asset timeframe ({ca_chart.time_interval}) must match the "
+                    f"primary timeframe ({primary_chart.time_interval}). Switch "
+                    f"timeframes or unmark cross-asset before training.",
+                )
+                return
+
         try:
-            df = pd.DataFrame(self.controller.frames[TradingStrategyFrame].search(show_output=False))
-            model = train_stacked_meta_learner(df, params)
+            df = ts_frame.search(show_output=False)
+        except Exception as e:
+            messagebox.showerror("Training failed", f"Could not fetch primary candles: {e}")
+            return
+        if df.empty:
+            # search() already surfaced its own dialog; abort silently.
+            return
+
+        cross_asset_bars = None
+        cross_asset_status = None
+        if ca_entry is not None:
+            try:
+                cross_asset_bars = ts_frame.search(show_output=False, workspace=ca_entry)
+            except Exception as e:
+                messagebox.showerror(
+                    "Training failed",
+                    f"Could not fetch cross-asset candles: {e}",
+                )
+                return
+            if cross_asset_bars.empty:
+                return
+
+            aligned_count = len(df.index.intersection(cross_asset_bars.index))
+            cross_asset_status = {
+                "symbol": ca_symbol,
+                "primary_bars": len(df),
+                "ca_bars": len(cross_asset_bars),
+                "aligned_bars": aligned_count,
+            }
+
+            # Activate the basis z-score microstructure feature for this run
+            # and persist the choice in inference_params.
+            params["enable_basis"] = True
+
+        # Snapshot of the training context. Persisted with the artifact so a
+        # future inference run can detect symbol / timeframe / CA-symbol drift
+        # against the current workspace. Today it drives the status labels;
+        # item 4 (and an eventual strict-mode flag) will use it to validate.
+        training_context = {
+            "primary_symbol": primary_symbol,
+            "primary_timeframe": primary_chart.time_interval,
+            "train_start": primary_general.start_date_input.get_date().isoformat(),
+            "train_end": primary_general.end_date_input.get_date().isoformat(),
+            "cross_asset_symbol": ca_symbol,  # None if no CA workspace
+            "cross_asset_aligned_bars": (
+                cross_asset_status["aligned_bars"] if cross_asset_status else None
+            ),
+        }
+        params["training_context"] = training_context
+
+        try:
+            model = train_stacked_meta_learner(
+                df, params, cross_asset_bars=cross_asset_bars
+            )
         except Exception as e:
             messagebox.showerror("Training failed", str(e))
             return
 
         self.meta_model_result = model
-        self.show_training_results(model.get("metrics", {}))
+        self.show_training_results(
+            model.get("metrics", {}),
+            cross_asset_info=cross_asset_status,
+            training_context=training_context,
+        )
         self.populate_version_selector()
         if model.get("version"):
             self.version_var.set(model["version"])
 
-    def show_training_results(self, metrics):
+    def show_training_results(self, metrics, cross_asset_info=None, training_context=None):
+        """Render metrics + training-context labels for either a just-trained
+        model (``cross_asset_info`` carries the live aligned-bar counts) or a
+        loaded artifact (``cross_asset_info`` may carry only the saved
+        ``aligned_bars`` from training). ``training_context`` populates the
+        "Trained on:" header line."""
         for key, label in self.result_labels.items():
-            text_prefix = label.cget("text").split(":", 1)[0]
             value = metrics.get(key)
-            if value is None:
-                label.config(text=f"{text_prefix}: ---")
+            label.config(text="---" if value is None else f"{value:.4f}")
+
+        if hasattr(self, "trained_on_label"):
+            if training_context:
+                symbol = training_context.get("primary_symbol") or "?"
+                tf = training_context.get("primary_timeframe") or "?"
+                start = training_context.get("train_start")
+                end = training_context.get("train_end")
+                date_part = f" ({start}..{end})" if start and end else ""
+                self.trained_on_label.config(text=f"Trained on: {symbol} {tf}{date_part}")
             else:
-                label.config(text=f"{text_prefix}: {value:.4f}")
+                self.trained_on_label.config(text="Trained on: ---")
+
+        if hasattr(self, "cross_asset_status_label"):
+            if cross_asset_info is None:
+                self.cross_asset_status_label.config(text="Cross-asset: none")
+            else:
+                symbol = cross_asset_info.get("symbol") or "?"
+                aligned = cross_asset_info.get("aligned_bars")
+                primary = cross_asset_info.get("primary_bars")
+                if primary:
+                    # Live training run: we know the denominator, so show the
+                    # alignment ratio so the user can spot a poor pairing fast.
+                    pct = (100.0 * aligned / primary) if aligned is not None else 0.0
+                    text = (
+                        f"Cross-asset: {symbol} | aligned bars "
+                        f"{aligned}/{primary} ({pct:.1f}%)"
+                    )
+                elif aligned is not None:
+                    # Loaded artifact: only the training-time aligned count was
+                    # saved; no denominator survives so render without the pct.
+                    text = f"Cross-asset: {symbol} | trained with {aligned} aligned bars"
+                else:
+                    text = f"Cross-asset: {symbol}"
+                self.cross_asset_status_label.config(text=text)
 
     # ------------------------------------------------------------------
     # Param dialog
@@ -1763,33 +2385,181 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
     # ------------------------------------------------------------------
     # Engine integration
     # ------------------------------------------------------------------
-    def build_signal_logic(self):
-        """
-        Return ``(signal_logic, strategy_descriptor, warmup_bars)`` for the engine.
+    # Flip to True once a model is promoted past the PoC phase: drift between
+    # the loaded model and the current workspace then becomes a hard refusal
+    # instead of a warning. Hard blockers (e.g. missing required cross-asset
+    # workspace) refuse the run regardless of this flag.
+    STRICT_MODEL_VALIDATION = False
 
-        If no model is currently loaded, falls back to a no-op signal_logic
-        that produces zero signals so the run completes cleanly and the user
-        is informed up-front.
+    def _check_model_workspace_compatibility(self, trained, ca_entry):
+        """Compare a loaded/trained model against the current workspace.
+
+        Returns ``(blocker_msg, drift_msg)``:
+
+        * ``blocker_msg`` non-None -> hard refusal regardless of
+          ``STRICT_MODEL_VALIDATION``; the model cannot run in the current
+          configuration (e.g. it requires the basis feature but no
+          cross-asset workspace is marked).
+        * ``drift_msg`` non-None -> soft drift between the saved training
+          context and the current workspace; warn-only today, refused when
+          ``STRICT_MODEL_VALIDATION`` is True.
+        * Both None -> all clear.
         """
+        feature_cols = trained.get("feature_columns") or []
+        model_uses_basis = any(str(c).startswith("basis_z_") for c in feature_cols)
+
+        if model_uses_basis and ca_entry is None:
+            return (
+                "This model has the cross-asset basis feature in its schema. "
+                "Mark a workspace as cross-asset before running the strategy, "
+                "otherwise every prediction would be NaN-blocked.",
+                None,
+            )
+
+        ctx = trained.get("training_context") or {}
+        expected_primary_symbol = ctx.get("primary_symbol")
+        expected_primary_tf = ctx.get("primary_timeframe")
+        expected_ca_symbol = ctx.get("cross_asset_symbol")
+
+        ts_frame = self.controller.frames[TradingStrategyFrame]
+        top_tabs = ts_frame.top_tabs
+        primary_general = top_tabs.get_active_general_tab()
+        primary_chart = top_tabs.get_active_chart()
+        primary_symbol = (
+            primary_general.stock_input.get().strip() if primary_general else ""
+        )
+        primary_tf = primary_chart.time_interval if primary_chart else ""
+
+        ca_symbol = None
+        if ca_entry is not None:
+            _, _, _, ca_general, *_ = ca_entry
+            ca_symbol = ca_general.stock_input.get().strip()
+
+        drifts = []
+        if (
+            expected_primary_symbol
+            and primary_symbol
+            and primary_symbol.upper() != expected_primary_symbol.upper()
+        ):
+            drifts.append(
+                f"Primary symbol differs from training "
+                f"(model={expected_primary_symbol}, workspace={primary_symbol})."
+            )
+        if (
+            expected_primary_tf
+            and primary_tf
+            and primary_tf != expected_primary_tf
+        ):
+            drifts.append(
+                f"Primary timeframe differs "
+                f"(model={expected_primary_tf}, workspace={primary_tf})."
+            )
+        if (
+            expected_ca_symbol
+            and ca_symbol
+            and ca_symbol.upper() != expected_ca_symbol.upper()
+        ):
+            drifts.append(
+                f"Cross-asset symbol differs "
+                f"(model={expected_ca_symbol}, workspace={ca_symbol})."
+            )
+        if expected_ca_symbol and ca_entry is None and not model_uses_basis:
+            # Edge case: training context recorded a CA pairing but the
+            # feature didn't actually land in the schema (e.g. enable_basis
+            # was off at training time). Surface as drift, not blocker.
+            drifts.append(
+                f"Model context recorded cross-asset={expected_ca_symbol} but "
+                "no cross-asset workspace is marked."
+            )
+
+        drift_msg = "\n".join(drifts) if drifts else None
+        return (None, drift_msg)
+
+    def build_signal_logic(self):
+        """Return ``(signal_logic, strategy_descriptor, warmup_bars)`` for the engine.
+
+        Cross-asset bars (when the marked CA workspace exists) are fetched at
+        build time and captured in the returned closure so the engine never
+        has to know about secondary feeds. Compatibility between the loaded
+        model and the current workspace is validated up front: hard blockers
+        always refuse, drift warnings warn-or-block based on
+        ``STRICT_MODEL_VALIDATION``.
+
+        Falls back to a no-op signal_logic on any refusal so the engine still
+        sees a well-formed callable and the run completes cleanly.
+        """
+
+        def _empty_logic():
+            def _empty(df: pd.DataFrame) -> pd.DataFrame:
+                return pd.DataFrame(index=df.index)
+
+            return _empty, {"type": "stacked_meta_learner", "version": None}, 0
+
         trained = self.meta_model_result
         if trained is None:
             messagebox.showwarning(
                 "Run Strategy",
                 "Train or load a model before running the strategy.",
             )
+            return _empty_logic()
 
-            def _empty(df: pd.DataFrame) -> pd.DataFrame:
-                return pd.DataFrame(index=df.index)
+        ts_frame = self.controller.frames[TradingStrategyFrame]
+        top_tabs = ts_frame.top_tabs
+        ca_entry = top_tabs.get_cross_asset_workspace()
 
-            return _empty, {"type": "stacked_meta_learner", "version": None}, 0
+        blocker_msg, drift_msg = self._check_model_workspace_compatibility(
+            trained, ca_entry
+        )
+        if blocker_msg:
+            messagebox.showerror("Run Strategy", blocker_msg)
+            return _empty_logic()
+        if drift_msg:
+            if self.STRICT_MODEL_VALIDATION:
+                messagebox.showerror(
+                    "Run Strategy",
+                    f"Model / workspace mismatch (strict mode):\n\n{drift_msg}",
+                )
+                return _empty_logic()
+            messagebox.showwarning(
+                "Run Strategy",
+                f"Model / workspace drift detected:\n\n{drift_msg}\n\n"
+                "Proceeding anyway. Set STRICT_MODEL_VALIDATION to True to "
+                "refuse drifted runs.",
+            )
+
+        # Fetch CA bars at build time so any failure is surfaced before the
+        # backtest thread starts; the engine never sees the secondary feed.
+        cross_asset_bars = None
+        if ca_entry is not None:
+            try:
+                cross_asset_bars = ts_frame.search(
+                    show_output=False, workspace=ca_entry
+                )
+            except Exception as e:
+                messagebox.showerror(
+                    "Run Strategy",
+                    f"Could not fetch cross-asset bars: {e}",
+                )
+                return _empty_logic()
+            if cross_asset_bars.empty:
+                # search() already showed its own "No Data" dialog.
+                return _empty_logic()
 
         params = trained.get("inference_params", trained)
-        signal_logic = lambda df: strategies.meta_learner_signals(df, trained, params)
+
+        def signal_logic(df: pd.DataFrame) -> pd.DataFrame:
+            return strategies.meta_learner_signals(
+                df, trained, params, cross_asset_bars=cross_asset_bars
+            )
+
+        ctx = trained.get("training_context") or {}
         descriptor = {
             "type": "stacked_meta_learner",
             "version": trained.get("version"),
             "threshold": trained.get("decision_threshold"),
             "base_strategies": trained.get("base_strategies", []),
+            "cross_asset_symbol": ctx.get("cross_asset_symbol"),
+            "used_cross_asset_bars": cross_asset_bars is not None,
         }
         warmup_bars = int(trained.get("warmup_bars", 0))
         return signal_logic, descriptor, warmup_bars
