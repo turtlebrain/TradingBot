@@ -23,6 +23,7 @@ import threading
 import tick_streamer as qt_stream
 import strategy_tree_builder as stb
 import persistence as persist
+import timeframe_presets as tf_presets
 import tick_processor
 import queue
 import ML_Classifier.ml_trading_persistence as ml_persist
@@ -548,6 +549,11 @@ class TabbedWorkspaceFrame(ttk.Frame):
         tab_widget = self._create_tab_widget(label, closable)
         self.workspaces.append((workspace, tab_widget, chart, general_tab, strategy_tab, execution_tab))
 
+        # Align strategy-tab defaults with this chart's interval. Call the tab
+        # directly — during TradingStrategyFrame.__init__ the frame is not yet
+        # registered on controller.frames.
+        strategy_tab.apply_timeframe_presets(chart.time_interval)
+
         self.select_workspace(tab_widget)
         self._refresh_plus_button()
 
@@ -638,6 +644,13 @@ class TabbedWorkspaceFrame(ttk.Frame):
         for workspace, tab, chart, _, _, execution_tab in self.workspaces:
             if workspace is self.active_workspace:
                 return execution_tab
+        return None
+
+    def get_strategy_tab_for_chart(self, chart):
+        """Return the StrategyCollapsibleFrame tied to the workspace ``chart``."""
+        for workspace, tab, c, _, strategy_tab, _ in self.workspaces:
+            if c is chart:
+                return strategy_tab
         return None
 
     def clear_active_chart(self):
@@ -837,6 +850,20 @@ class TradingStrategyFrame(ttk.Frame):
                 "Loss" if amountused <= amounttotal else "Overdrawn"
             )
         )
+
+    def apply_timeframe_presets(self, timeframe, source_chart=None):
+        """Push timeframe-specific training + indicator defaults to one workspace.
+
+        Updates the Strategy tab tied to ``source_chart`` (or the active chart
+        when omitted). Called when a chart interval changes or a workspace is
+        first created.
+        """
+        chart = source_chart or self.top_tabs.get_active_chart()
+        if chart is None:
+            return
+        strategy_tab = self.top_tabs.get_strategy_tab_for_chart(chart)
+        if strategy_tab is not None:
+            strategy_tab.apply_timeframe_presets(timeframe)
     
     
     def set_active_account(self, account_meta):
@@ -1464,7 +1491,8 @@ class CandlestickChartFrame(ttk.Frame):
     def on_timeframe_change(self, value):
         self.time_interval = value
         trading_frame = self.controller.frames[TradingStrategyFrame]
-        trading_frame.search(show_output=True)       
+        trading_frame.apply_timeframe_presets(value, source_chart=self)
+        trading_frame.search(show_output=True)
                            
 class BackTestingResultsFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -1917,41 +1945,34 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 
     ``build_signal_logic`` is the integration point with the backtest and
     live engines; it returns the meta-learner adapter as a single callable.
-    """
 
-    DEFAULT_TRAINING_PARAMS = {
-        "horizon": 10,
-        "up_barrier_atr": 1.5,
-        "down_barrier_atr": 1.5,
-        "vertical_bars": 10,
-        "embargo": 10,
-        "calibration": "isotonic",
-        "decision_threshold": 0.55,
-        "n_splits": 5,
-        "learning_rate": 0.05,
-        "cost_bp": 5.0,
-        "atr_window": 14,
-    }
+    Training and indicator defaults are keyed by chart timeframe; see
+    ``timeframe_presets.py``. ``apply_timeframe_presets`` is invoked when the
+    user switches interval or opens a new workspace tab.
+    """
 
     def __init__(self, parent, controller):
         super().__init__(parent, title="Strategy")
         self.controller = controller
 
         self.meta_model_result = None
+        self._current_timeframe = tf_presets.DEFAULT_TIMEFRAME
+
+        initial_training = tf_presets.get_training_presets(self._current_timeframe)
 
         # Training params backed by Tk variables so the dialog edits persist.
         self._training_vars = {
-            "horizon": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["horizon"]),
-            "up_barrier_atr": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["up_barrier_atr"]),
-            "down_barrier_atr": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["down_barrier_atr"]),
-            "vertical_bars": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["vertical_bars"]),
-            "embargo": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["embargo"]),
-            "calibration": tk.StringVar(value=self.DEFAULT_TRAINING_PARAMS["calibration"]),
-            "decision_threshold": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["decision_threshold"]),
-            "n_splits": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["n_splits"]),
-            "learning_rate": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["learning_rate"]),
-            "cost_bp": tk.DoubleVar(value=self.DEFAULT_TRAINING_PARAMS["cost_bp"]),
-            "atr_window": tk.IntVar(value=self.DEFAULT_TRAINING_PARAMS["atr_window"]),
+            "horizon": tk.IntVar(value=initial_training["horizon"]),
+            "up_barrier_atr": tk.DoubleVar(value=initial_training["up_barrier_atr"]),
+            "down_barrier_atr": tk.DoubleVar(value=initial_training["down_barrier_atr"]),
+            "vertical_bars": tk.IntVar(value=initial_training["vertical_bars"]),
+            "embargo": tk.IntVar(value=initial_training["embargo"]),
+            "calibration": tk.StringVar(value=initial_training["calibration"]),
+            "decision_threshold": tk.DoubleVar(value=initial_training["decision_threshold"]),
+            "n_splits": tk.IntVar(value=initial_training["n_splits"]),
+            "learning_rate": tk.DoubleVar(value=initial_training["learning_rate"]),
+            "cost_bp": tk.DoubleVar(value=initial_training["cost_bp"]),
+            "atr_window": tk.IntVar(value=initial_training["atr_window"]),
         }
 
         self._build_strategy_panel()
@@ -2060,17 +2081,35 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.populate_version_selector()
 
     # ------------------------------------------------------------------
+    # Timeframe-aware defaults (see timeframe_presets.py)
+    # ------------------------------------------------------------------
+    def apply_timeframe_presets(self, timeframe: str) -> None:
+        """Load training + indicator defaults for ``timeframe`` into this panel."""
+        tf = tf_presets.normalize_timeframe(timeframe)
+        self._current_timeframe = tf
+
+        training = tf_presets.get_training_presets(tf)
+        for key, var in self._training_vars.items():
+            if key not in training:
+                continue
+            value = training[key]
+            if isinstance(var, tk.StringVar):
+                var.set(str(value))
+            elif isinstance(var, tk.DoubleVar):
+                var.set(float(value))
+            else:
+                var.set(int(value))
+
+        if hasattr(self, "base_section"):
+            self.base_section.apply_indicator_presets(
+                tf_presets.get_all_indicator_presets(tf)
+            )
+
+    # ------------------------------------------------------------------
     # Default per-strategy parameters surfaced by the StrategySection picker.
     # ------------------------------------------------------------------
     def get_strategy_params(self, name):
-        default_params = {
-            "DMA Crossing": {"short_window": 20, "long_window": 50},
-            "S/R Structure": {"distance": 5},
-            "RSI": {"lookback": 14, "overbought": 70, "oversold": 30},
-            "EMA Break": {"short_window": 20, "long_window": 50},
-            "VWAP Break": {"lookback": 14},
-        }
-        return default_params.get(name, {})
+        return tf_presets.get_indicator_presets(self._current_timeframe, name)
 
     # ------------------------------------------------------------------
     # Version selector

@@ -1,3 +1,5 @@
+import copy
+
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 import tkinter as tk
@@ -120,3 +122,17 @@ class StrategySection(ttk.Frame):
             for c in self.list_frame.winfo_children()
             if isinstance(c, StrategyRow)
         ]
+
+    def apply_indicator_presets(self, presets_by_name: dict) -> None:
+        """Replace params on every listed strategy with the timeframe defaults.
+
+        Only rows whose strategy name appears in ``presets_by_name`` are
+        updated; unknown names are left unchanged.
+        """
+        for child in self.list_frame.winfo_children():
+            if not isinstance(child, StrategyRow):
+                continue
+            name = child.get_name()
+            if name not in presets_by_name:
+                continue
+            child.params = copy.deepcopy(presets_by_name[name])

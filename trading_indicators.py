@@ -82,22 +82,66 @@ def compute_sr_indicator(data: pd.DataFrame, params: dict) -> pd.DataFrame:
     out['nearest_resistance'] = nearest_resistance
     return out
 
+def _typical_price(data: pd.DataFrame) -> pd.Series:
+    """Bar typical price for VWAP; falls back to close when OHLC incomplete."""
+    required = ("high", "low", "close")
+    if all(col in data.columns for col in required):
+        return (data["high"] + data["low"] + data["close"]) / 3.0
+    return data["close"].astype(float)
+
+
+def _us_session_keys(index: pd.DatetimeIndex, tz: str = "America/New_York") -> pd.Series:
+    """Calendar session key per bar in ``tz`` (midnight-normalized local dates)."""
+    if index.tz is None:
+        idx_local = index.tz_localize("UTC").tz_convert(tz)
+    else:
+        idx_local = index.tz_convert(tz)
+    return pd.Series(idx_local.normalize(), index=index)
+
+
 def compute_vwap_indicator(data: pd.DataFrame, params: dict) -> pd.DataFrame:
     """
-    Compute VWAP (Volume Weighted Average Price) from OHLCV data.
-    Returns a DataFrame with vwap column.
+    Compute session-anchored VWAP from OHLCV data.
 
-    Expected columns in `data`:
-        - 'close'
-        - 'volume'
+    VWAP resets at the start of each US equity session day (calendar date in
+    ``tz``, default America/New_York). This matches how VWAP is used
+    intraday; the previous implementation cumulated across the entire fetched
+    range, which breaks multi-day minute/hour series.
+
+    Params
+    ------
+    tz : str
+        Timezone for session boundaries (default ``America/New_York``).
+    session_anchor : bool
+        When True (default), reset cumulative VWAP each session day. When
+        False, use legacy whole-series cumulative VWAP.
+
+    Expected columns: ``close``, ``volume``; ``high``/``low`` optional for
+    typical price ``(H+L+C)/3``.
     """
-
     out = pd.DataFrame(index=data.index)
+    if data is None or data.empty:
+        out["vwap"] = pd.Series(dtype=float, index=data.index)
+        return out
 
-    # Cumulative price*volume and cumulative volume
-    pv = (data['close'] * data['volume']).cumsum()
-    v = data['volume'].cumsum()
+    if "volume" not in data.columns:
+        out["vwap"] = np.nan
+        return out
 
-    out['vwap'] = pv / v
+    tz = str(params.get("tz", "America/New_York"))
+    session_anchor = bool(params.get("session_anchor", True))
 
+    typical = _typical_price(data)
+    volume = data["volume"].astype(float).clip(lower=0)
+    pv = typical * volume
+
+    if session_anchor and isinstance(data.index, pd.DatetimeIndex):
+        session_key = _us_session_keys(data.index, tz=tz)
+        cum_pv = pv.groupby(session_key, sort=False).cumsum()
+        cum_vol = volume.groupby(session_key, sort=False).cumsum()
+    else:
+        cum_pv = pv.cumsum()
+        cum_vol = volume.cumsum()
+
+    out["vwap"] = cum_pv / cum_vol.replace(0, np.nan)
     return out
