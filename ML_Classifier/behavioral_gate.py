@@ -14,12 +14,13 @@ Public API:
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
 from ML_Classifier.behavioral_features import _DEFAULT_SESSION_OPEN_MINUTE
+from ML_Classifier.eval_metrics import compute_trade_metrics
 
 
 BEHAVIORAL_REGIMES: Tuple[str, ...] = ("opening", "chop", "herding", "neutral")
@@ -135,6 +136,72 @@ def classify_behavioral_regime(
     return regime.rename("behavioral_regime")
 
 
+def resolve_gate_bumps(params: Optional[dict]) -> Tuple[float, float]:
+    """Use walk-forward learned bumps when present, else rule defaults."""
+    p = _merged_params(params)
+    learned_open = p.get("gate_opening_threshold_bump_learned")
+    learned_chop = p.get("gate_chop_threshold_bump_learned")
+    opening = float(
+        learned_open
+        if learned_open is not None
+        else p.get("gate_opening_threshold_bump", 0.05)
+    )
+    chop = float(
+        learned_chop
+        if learned_chop is not None
+        else p.get("gate_chop_threshold_bump", 0.03)
+    )
+    return opening, chop
+
+
+def learn_regime_gate_bumps(
+    prob_up: np.ndarray,
+    signal: np.ndarray,
+    regime: pd.Series,
+    fwd_ret: np.ndarray,
+    cost_frac: float,
+    base_threshold: float,
+    params: Optional[dict] = None,
+    min_trades: int = 5,
+) -> Dict[str, float]:
+    """
+    Grid-search threshold bumps per regime on validation data.
+
+    Returns keys ``gate_opening_threshold_bump_learned`` and
+    ``gate_chop_threshold_bump_learned``.
+    """
+    p = _merged_params(params)
+    grid = [0.0, 0.02, 0.04, 0.06, 0.08, 0.10]
+    regime = regime.reindex(range(len(signal))).fillna("neutral")
+
+    def _best_bump(regime_name: str) -> float:
+        mask = regime.values == regime_name
+        if mask.sum() < min_trades:
+            return float(p.get(f"gate_{regime_name}_threshold_bump", 0.0))
+        best_bump = float(p.get(f"gate_{regime_name}_threshold_bump", 0.0))
+        best_edge = float("-inf")
+        for bump in grid:
+            eff = base_threshold + bump
+            long_m = prob_up >= eff
+            short_m = prob_up <= (1.0 - eff)
+            sign = np.where(long_m, 1, np.where(short_m, -1, 0))
+            # Only evaluate bars in this regime
+            sign_r = np.where(mask, sign, 0)
+            m = compute_trade_metrics(
+                prob_up, np.zeros(len(prob_up)), fwd_ret, eff, cost_frac, signal=sign_r
+            )
+            edge = m.get("avg_edge_bp", float("nan"))
+            if np.isfinite(edge) and edge > best_edge:
+                best_edge = edge
+                best_bump = bump
+        return best_bump
+
+    return {
+        "gate_opening_threshold_bump_learned": _best_bump("opening"),
+        "gate_chop_threshold_bump_learned": _best_bump("chop"),
+    }
+
+
 def apply_behavioral_gate(
     predictions: pd.DataFrame,
     regime: pd.Series,
@@ -162,8 +229,7 @@ def apply_behavioral_gate(
     aligned_regime = regime.reindex(out.index).fillna("neutral")
     effective = pd.Series(base_threshold, index=out.index, dtype=float)
 
-    opening_bump = float(p["gate_opening_threshold_bump"])
-    chop_bump = float(p["gate_chop_threshold_bump"])
+    opening_bump, chop_bump = resolve_gate_bumps(p)
     effective.loc[aligned_regime == "opening"] += opening_bump
     effective.loc[aligned_regime == "chop"] += chop_bump
     effective = effective.clip(0.5, 0.95)

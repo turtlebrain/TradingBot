@@ -42,8 +42,27 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import accuracy_score, brier_score_loss
 
 import trading_strategies as strategies
-from ML_Classifier.behavioral_features import build_behavioral_features
-from ML_Classifier.behavioral_gate import apply_behavioral_gate, classify_behavioral_regime
+from ML_Classifier.behavioral_features import (
+    BEHAVIORAL_V2_COLUMNS,
+    build_behavioral_features,
+    or_coverage_pct,
+)
+from ML_Classifier.behavioral_gate import (
+    apply_behavioral_gate,
+    classify_behavioral_regime,
+    learn_regime_gate_bumps,
+)
+from ML_Classifier.eval_metrics import (
+    compute_metrics_by_regime,
+    compute_trade_metrics,
+    tune_decision_threshold,
+)
+from ML_Classifier.meta_label import (
+    apply_meta_label,
+    build_meta_label_features,
+    build_meta_labels,
+    train_meta_label,
+)
 from ML_Classifier.microstructure_features import build_microstructure_features
 from ML_Classifier.ml_trading_persistence import save_training_artifacts
 
@@ -97,6 +116,13 @@ def _microstructure_params(params: dict) -> dict:
 _BEHAVIORAL_PARAM_KEYS = (
     "enable_behavioral",
     "enable_behavioral_gate",
+    "behavioral_in_direction_model",
+    "enable_meta_label",
+    "meta_threshold",
+    "enable_behavioral_consensus",
+    "enable_behavioral_anchoring",
+    "enable_behavioral_flow",
+    "gate_learn_on_train",
     "or_minutes",
     "session_open_minute",
     "tz",
@@ -108,11 +134,24 @@ _BEHAVIORAL_PARAM_KEYS = (
     "gate_opening_threshold_bump",
     "gate_chop_threshold_bump",
     "gate_opening_block",
+    "gate_opening_threshold_bump_learned",
+    "gate_chop_threshold_bump_learned",
+    "meta_learning_rate",
+    "meta_max_iter",
+    "meta_max_depth",
+    "meta_l2_regularization",
 )
 
 _BEHAVIORAL_DEFAULTS = {
-    "enable_behavioral": True,
+    "enable_behavioral": False,
     "enable_behavioral_gate": False,
+    "behavioral_in_direction_model": False,
+    "enable_meta_label": False,
+    "meta_threshold": 0.55,
+    "enable_behavioral_consensus": True,
+    "enable_behavioral_anchoring": True,
+    "enable_behavioral_flow": True,
+    "gate_learn_on_train": True,
     "or_minutes": 15,
     "session_open_minute": 9 * 60 + 30,
     "ofi_bar_window": 30,
@@ -123,22 +162,14 @@ _BEHAVIORAL_DEFAULTS = {
     "gate_opening_threshold_bump": 0.05,
     "gate_chop_threshold_bump": 0.03,
     "gate_opening_block": False,
+    "meta_learning_rate": 0.05,
+    "meta_max_iter": 150,
+    "meta_max_depth": 4,
+    "meta_l2_regularization": 0.1,
     "tz": "America/New_York",
 }
 
-_BEHAVIORAL_FEATURE_COLUMNS = (
-    "score_consensus_mean",
-    "score_consensus_std",
-    "dist_open_atr",
-    "dist_or_high_atr",
-    "dist_or_low_atr",
-    "or_position",
-    "price_accel_atr",
-    "upper_wick_ratio",
-    "lower_wick_ratio",
-    "capitulation_score",
-    "flow_price_diverge",
-)
+_BEHAVIORAL_FEATURE_COLUMNS = BEHAVIORAL_V2_COLUMNS
 
 
 def _behavioral_params(params: dict) -> dict:
@@ -223,6 +254,31 @@ def _strategy_score_columns(df: pd.DataFrame, base_strategies: Iterable[dict]) -
     return pd.DataFrame(cols, index=df.index)
 
 
+def _compute_behavior_block(
+    df: pd.DataFrame,
+    score_df: pd.DataFrame,
+    regime_df: pd.DataFrame,
+    micro_df: pd.DataFrame,
+    params: dict,
+) -> pd.DataFrame:
+    beh_params = _behavioral_params(params)
+    if not beh_params.get("enable_behavioral", False):
+        return pd.DataFrame(index=df.index)
+
+    context_parts = [regime_df]
+    if micro_df is not None and not micro_df.empty:
+        context_parts.append(micro_df)
+    context_df = pd.concat(context_parts, axis=1)
+    atr_window = int(params.get("atr_window", 14))
+    return build_behavioral_features(
+        df,
+        beh_params,
+        score_df=score_df,
+        context_df=context_df,
+        atr=_atr(df, atr_window),
+    )
+
+
 def build_score_features(
     df: pd.DataFrame,
     base_strategies: Iterable[dict],
@@ -265,21 +321,13 @@ def build_score_features(
             blocks.append(micro_df)
 
     beh_params = _behavioral_params(params)
-    if beh_params.get("enable_behavioral", True):
-        context_parts = [regime_df]
-        if not micro_df.empty:
-            context_parts.append(micro_df)
-        context_df = pd.concat(context_parts, axis=1)
-        atr_window = int(params.get("atr_window", 14))
-        behavior_df = build_behavioral_features(
-            df,
-            beh_params,
-            score_df=score_df,
-            context_df=context_df,
-            atr=_atr(df, atr_window),
-        )
-        if not behavior_df.empty:
-            blocks.append(behavior_df)
+    behavior_df = _compute_behavior_block(df, score_df, regime_df, micro_df, params)
+    if (
+        beh_params.get("enable_behavioral", False)
+        and beh_params.get("behavioral_in_direction_model", False)
+        and not behavior_df.empty
+    ):
+        blocks.append(behavior_df)
 
     feats = pd.concat(blocks, axis=1)
     feats = feats.replace([np.inf, -np.inf], np.nan)
@@ -383,11 +431,19 @@ def _calibration_mae(y_true: np.ndarray, prob: np.ndarray, n_bins: int = 10) -> 
 
 
 def _build_estimator(params: dict):
+    beh = _behavioral_params(params)
+    l2 = float(params.get("l2_regularization", 0.0))
+    max_depth = params.get("max_depth")
+    if beh.get("enable_behavioral") and beh.get("behavioral_in_direction_model"):
+        l2 = float(params.get("l2_regularization", params.get("behavioral_l2_regularization", 0.5)))
+        if max_depth is None:
+            max_depth = int(params.get("behavioral_max_depth", 4))
+
     base = HistGradientBoostingClassifier(
         learning_rate=float(params.get("learning_rate", 0.05)),
         max_iter=int(params.get("max_iter", 200)),
-        max_depth=params.get("max_depth"),
-        l2_regularization=float(params.get("l2_regularization", 0.0)),
+        max_depth=max_depth,
+        l2_regularization=l2,
         random_state=int(params.get("random_state", 42)),
     )
     calibration = str(params.get("calibration", "none")).lower()
@@ -403,6 +459,104 @@ def _build_estimator(params: dict):
 def _binary_up_labels(labels: pd.Series) -> pd.Series:
     """Reduce {-1, 0, +1} triple-barrier labels to a binary up-vs-not-up target."""
     return (labels > 0).astype(int)
+
+
+def _fwd_returns(df: pd.DataFrame, params: dict, index: pd.Index) -> pd.Series:
+    h = int(params.get("vertical_bars", params.get("horizon", 10)))
+    return (df["close"].shift(-h) / df["close"] - 1.0).reindex(index)
+
+
+def _build_behavior_context(
+    df: pd.DataFrame,
+    base_strategies: Iterable[dict],
+    params: dict,
+    cross_asset_bars: Optional[pd.DataFrame] = None,
+    quotes: Optional[pd.DataFrame] = None,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Shifted behavioral block and regime/micro context for meta-label / gate."""
+    score_df = _strategy_score_columns(df, base_strategies)
+    regime_df = _regime_features(df, params)
+    micro_df = pd.DataFrame(index=df.index)
+    micro_params = _microstructure_params(params)
+    if micro_params.get("enable_microstructure", True):
+        micro_df = build_microstructure_features(
+            df,
+            micro_params,
+            cross_asset_bars=cross_asset_bars,
+            quotes=quotes,
+        )
+    behavior_df = _compute_behavior_block(df, score_df, regime_df, micro_df, params)
+    context_parts = [regime_df]
+    if micro_df is not None and not micro_df.empty:
+        context_parts.append(micro_df)
+    context_df = pd.concat(context_parts, axis=1) if context_parts else pd.DataFrame(index=df.index)
+    behavior_df = behavior_df.replace([np.inf, -np.inf], np.nan).shift(1)
+    context_df = context_df.replace([np.inf, -np.inf], np.nan).shift(1)
+    return behavior_df, context_df
+
+
+def _signals_from_prob(prob_up: np.ndarray, threshold: float) -> np.ndarray:
+    long_mask = prob_up >= threshold
+    short_mask = prob_up <= (1.0 - threshold)
+    return np.where(long_mask, 1, np.where(short_mask, -1, 0)).astype(int)
+
+
+def _apply_inference_stack(
+    index: pd.Index,
+    prob_up: pd.Series,
+    behavior_feats: pd.DataFrame,
+    context_feats: pd.DataFrame,
+    params: dict,
+    meta_trained: Optional[dict] = None,
+) -> Tuple[pd.DataFrame, pd.Series]:
+    """Direction prob -> signal through optional gate and meta-label filter."""
+    beh = _behavioral_params(params)
+    threshold = float(params.get("decision_threshold", 0.55))
+
+    out = pd.DataFrame(index=index)
+    out["prob_up"] = prob_up.astype(float)
+    out["prob_down"] = 1.0 - out["prob_up"]
+    out["score"] = 2.0 * out["prob_up"] - 1.0
+    out["signal"] = _signals_from_prob(out["prob_up"].to_numpy(), threshold)
+
+    regime = pd.Series("neutral", index=index, name="behavioral_regime")
+    if beh.get("enable_behavioral", False) and len(behavior_feats) > 0:
+        regime = classify_behavioral_regime(
+            behavior_feats.reindex(index),
+            beh,
+            context_df=context_feats.reindex(index) if context_feats is not None else None,
+        )
+        out["behavioral_regime"] = regime
+
+    use_gate = (
+        beh.get("enable_behavioral_gate", False)
+        and beh.get("enable_behavioral", False)
+        and not beh.get("enable_meta_label", False)
+    )
+    if use_gate:
+        gate_params = {**beh, "decision_threshold": threshold}
+        gated = apply_behavioral_gate(out[["prob_up", "signal"]].copy(), regime, gate_params)
+        out["signal"] = gated["signal"]
+        out["effective_threshold"] = gated["effective_threshold"]
+        out["gate_adjusted"] = gated["gate_adjusted"]
+
+    if beh.get("enable_meta_label", False) and meta_trained and meta_trained.get("trained"):
+        meta_X = build_meta_label_features(
+            out["prob_up"],
+            out["signal"],
+            regime,
+            behavior_feats.reindex(index),
+            context_feats.reindex(index) if context_feats is not None else pd.DataFrame(index=index),
+        )
+        out = apply_meta_label(
+            out,
+            meta_X,
+            meta_trained,
+            float(beh.get("meta_threshold", 0.55)),
+        )
+
+    out["signal"] = out["signal"].fillna(0).astype(int)
+    return out, regime
 
 
 def train_stacked_meta_learner(
@@ -438,14 +592,27 @@ def train_stacked_meta_learner(
     X = feats.loc[common_idx]
     y = y.loc[common_idx]
 
+    behavior_full, context_full = _build_behavior_context(
+        df, base_strategies, params, cross_asset_bars=cross_asset_bars, quotes=quotes
+    )
+    behavior_aligned = behavior_full.reindex(common_idx)
+    context_aligned = context_full.reindex(common_idx)
+
+    beh_params = _behavioral_params(params)
     embargo = int(params.get("embargo", max(int(params.get("horizon", 10)),
                                             int(params.get("vertical_bars", 10)))))
     n_splits = int(params.get("n_splits", 5))
-    threshold = float(params.get("decision_threshold", 0.55))
     cost_bp = float(params.get("cost_bp", 5.0))
     cost_frac = cost_bp / 1e4
 
-    fold_metrics = []
+    fold_metrics: List[dict] = []
+    fold_regime_metrics: List[dict] = []
+    fold_tuned_thresholds: List[float] = []
+    oos_prob: List[float] = []
+    oos_signal: List[int] = []
+    oos_fwd: List[float] = []
+    oos_regime: List[str] = []
+
     folds = _purged_kfold_indices(len(X), n_splits, embargo)
     for train_idx, test_idx in folds:
         X_train = X.iloc[train_idx]
@@ -455,42 +622,150 @@ def train_stacked_meta_learner(
         est = _build_estimator(params)
         est.fit(X_train, y_train)
         prob_up = est.predict_proba(X_test)[:, 1]
+        test_index = X_test.index
+        fwd_ret = _fwd_returns(df, params, test_index).to_numpy()
 
-        # Forward returns over the vertical-barrier window for cost-aware metric.
-        h = int(params.get("vertical_bars", params.get("horizon", 10)))
-        fwd_ret = (df["close"].shift(-h) / df["close"] - 1.0).reindex(X_test.index)
+        tuned_t = tune_decision_threshold(prob_up, fwd_ret, cost_frac)
+        fold_tuned_thresholds.append(tuned_t)
 
-        long_mask = prob_up >= threshold
-        short_mask = prob_up <= (1.0 - threshold)
-        trade_mask = long_mask | short_mask
-        if trade_mask.any():
-            sign = np.where(long_mask, 1.0, np.where(short_mask, -1.0, 0.0))
-            edge = sign * fwd_ret.to_numpy() - cost_frac * (sign != 0).astype(float)
-            avg_edge_bp = float(np.nanmean(edge[trade_mask]) * 1e4)
-            hit_rate = float(np.nanmean((edge[trade_mask] > 0).astype(float)))
-        else:
-            avg_edge_bp = float("nan")
-            hit_rate = float("nan")
+        fold_params = dict(params)
+        fold_params["decision_threshold"] = tuned_t
 
-        y_pred = (prob_up >= 0.5).astype(int)
-        fold_metrics.append({
-            "accuracy": float(accuracy_score(y_test, y_pred)),
-            "brier": float(brier_score_loss(y_test, prob_up)),
-            "calibration_mae": _calibration_mae(y_test.to_numpy(), prob_up),
-            "trade_rate": float(trade_mask.mean()),
-            "avg_edge_bp": avg_edge_bp,
-            "hit_rate": hit_rate,
-        })
+        prob_series = pd.Series(prob_up, index=test_index)
+        beh_test = behavior_aligned.loc[test_index]
+        ctx_test = context_aligned.loc[test_index]
+        meta_fold: Optional[dict] = None
 
-    # Aggregate metrics across folds (NaN-tolerant).
-    metrics = {}
+        if beh_params.get("enable_meta_label") and beh_params.get("enable_behavioral"):
+            prob_train = est.predict_proba(X_train)[:, 1]
+            train_index = X_train.index
+            fwd_train = _fwd_returns(df, params, train_index).to_numpy()
+            train_t = tune_decision_threshold(prob_train, fwd_train, cost_frac)
+            train_params = dict(params)
+            train_params["decision_threshold"] = train_t
+            train_prob_s = pd.Series(prob_train, index=train_index)
+            beh_train = behavior_aligned.loc[train_index]
+            ctx_train = context_aligned.loc[train_index]
+            train_stack, train_regime = _apply_inference_stack(
+                train_index, train_prob_s, beh_train, ctx_train, train_params, meta_trained=None
+            )
+            meta_y = build_meta_labels(df, train_stack["signal"], params, cost_frac)
+            meta_X = build_meta_label_features(
+                train_stack["prob_up"],
+                train_stack["signal"],
+                train_regime,
+                beh_train,
+                ctx_train,
+            )
+            meta_fold = train_meta_label(meta_X, meta_y, params)
+
+        stacked, regime = _apply_inference_stack(
+            test_index, prob_series, beh_test, ctx_test, fold_params, meta_trained=meta_fold
+        )
+        sig = stacked["signal"].to_numpy()
+
+        m = compute_trade_metrics(
+            prob_up, y_test.to_numpy(), fwd_ret, tuned_t, cost_frac, signal=sig
+        )
+        m["brier"] = float(brier_score_loss(y_test, prob_up))
+        m["calibration_mae"] = _calibration_mae(y_test.to_numpy(), prob_up)
+        m["decision_threshold"] = tuned_t
+        regime_breakdown = compute_metrics_by_regime(sig, fwd_ret, regime, cost_frac)
+        m["metrics_by_regime"] = regime_breakdown
+        fold_metrics.append(m)
+        fold_regime_metrics.append(regime_breakdown)
+
+        oos_prob.extend(prob_up.tolist())
+        oos_signal.extend(sig.tolist())
+        oos_fwd.extend(fwd_ret.tolist())
+        oos_regime.extend(regime.fillna("neutral").astype(str).tolist())
+
+    metrics: dict = {}
     if fold_metrics:
-        for k in fold_metrics[0].keys():
-            vals = [m[k] for m in fold_metrics if not (m[k] is None or (isinstance(m[k], float) and np.isnan(m[k])))]
+        scalar_keys = ("accuracy", "brier", "calibration_mae", "trade_rate", "avg_edge_bp", "hit_rate")
+        for k in scalar_keys:
+            vals = [
+                m[k] for m in fold_metrics
+                if k in m and m[k] is not None and not (isinstance(m[k], float) and np.isnan(m[k]))
+            ]
             metrics[k] = float(np.mean(vals)) if vals else float("nan")
+
+    threshold = (
+        float(np.mean(fold_tuned_thresholds))
+        if fold_tuned_thresholds
+        else float(params.get("decision_threshold", 0.55))
+    )
+
+    learned_bumps: Dict[str, float] = {}
+    if (
+        beh_params.get("enable_behavioral_gate")
+        and beh_params.get("enable_behavioral")
+        and not beh_params.get("enable_meta_label")
+        and beh_params.get("gate_learn_on_train", True)
+        and oos_prob
+    ):
+        oos_prob_arr = np.asarray(oos_prob, dtype=float)
+        oos_sig_arr = np.asarray(oos_signal, dtype=int)
+        oos_fwd_arr = np.asarray(oos_fwd, dtype=float)
+        oos_regime_s = pd.Series(oos_regime)
+        learned_bumps = learn_regime_gate_bumps(
+            oos_prob_arr,
+            oos_sig_arr,
+            oos_regime_s,
+            oos_fwd_arr,
+            cost_frac,
+            threshold,
+            params=beh_params,
+        )
 
     final_estimator = _build_estimator(params)
     final_estimator.fit(X, y)
+
+    meta_label_result: dict = {"trained": False, "pipeline": None, "feature_columns": [], "metrics": {}}
+    if beh_params.get("enable_meta_label") and beh_params.get("enable_behavioral"):
+        prob_full = final_estimator.predict_proba(X)[:, 1]
+        full_params = dict(params)
+        full_params["decision_threshold"] = threshold
+        prob_full_s = pd.Series(prob_full, index=common_idx)
+        full_stack, full_regime = _apply_inference_stack(
+            common_idx, prob_full_s, behavior_aligned, context_aligned, full_params, meta_trained=None
+        )
+        meta_y = build_meta_labels(df, full_stack["signal"], params, cost_frac)
+        meta_X = build_meta_label_features(
+            full_stack["prob_up"],
+            full_stack["signal"],
+            full_regime,
+            behavior_aligned,
+            context_aligned,
+        )
+        meta_label_result = train_meta_label(meta_X, meta_y, params)
+
+    metrics_by_regime: dict = {}
+    if fold_regime_metrics:
+        regime_names = set()
+        for block in fold_regime_metrics:
+            regime_names.update(block.keys())
+        for name in regime_names:
+            edges = []
+            hits = []
+            counts = []
+            for block in fold_regime_metrics:
+                if name not in block:
+                    continue
+                r = block[name]
+                if np.isfinite(r.get("avg_edge_bp", float("nan"))):
+                    edges.append(r["avg_edge_bp"])
+                if np.isfinite(r.get("hit_rate", float("nan"))):
+                    hits.append(r["hit_rate"])
+                counts.append(r.get("trade_count", 0))
+            if edges or hits:
+                metrics_by_regime[name] = {
+                    "avg_edge_bp": float(np.mean(edges)) if edges else float("nan"),
+                    "hit_rate": float(np.mean(hits)) if hits else float("nan"),
+                    "trade_count": int(sum(counts)),
+                }
+
+    or_cov = or_coverage_pct(behavior_full) if beh_params.get("enable_behavioral") else float("nan")
 
     warmup_bars = _estimate_warmup(base_strategies, params)
 
@@ -503,11 +778,8 @@ def train_stacked_meta_learner(
     }
     inference_params.update(_microstructure_params(params))
     inference_params.update(_behavioral_params(params))
+    inference_params.update(learned_bumps)
 
-    # Snapshot of *what was trained on* (symbol / timeframe / dates / CA pair).
-    # The metalearner does not interpret these fields, it just round-trips them
-    # so the UI and any future strict-mode inference guard can validate that
-    # the model is being used in a context compatible with its training.
     training_context = dict(params.get("training_context", {}) or {})
 
     result = {
@@ -524,9 +796,17 @@ def train_stacked_meta_learner(
         "cost_bp": cost_bp,
         "fold_metrics": fold_metrics,
         "metrics": metrics,
+        "metrics_by_regime": metrics_by_regime,
+        "or_coverage_pct": or_cov,
+        "meta_label": meta_label_result,
         "warmup_bars": warmup_bars,
         "training_context": training_context,
     }
+    if meta_label_result.get("trained") and meta_label_result.get("metrics"):
+        metrics.update({
+            k: v for k, v in meta_label_result["metrics"].items()
+            if k.startswith("meta_")
+        })
     version = save_training_artifacts(result)
     result["version"] = version
     return result
@@ -557,7 +837,7 @@ def _estimate_warmup(base_strategies: Iterable[dict], params: dict) -> int:
         if micro.get("enable_quote_ofi", False):
             candidates.append(int(micro.get("ofi_quote_window", 100)))
     beh = _behavioral_params(params)
-    if beh.get("enable_behavioral", True):
+    if beh.get("enable_behavioral", False):
         candidates.append(int(beh.get("or_minutes", 15)) + 10)
         candidates.append(int(beh.get("ofi_bar_window", 30)))
     for spec in base_strategies:
@@ -602,13 +882,6 @@ def predict_meta_learner(
     if params:
         effective_params.update(params)
 
-    threshold = float(
-        effective_params.get(
-            "decision_threshold",
-            trained.get("decision_threshold", 0.55),
-        )
-    )
-
     feats = build_score_features(
         df,
         base_strategies,
@@ -631,37 +904,98 @@ def predict_meta_learner(
 
     pipeline = trained["pipeline"]
     prob_up = pipeline.predict_proba(valid)[:, 1]
-    out.loc[valid.index, "prob_up"] = prob_up
-    out.loc[valid.index, "prob_down"] = 1.0 - prob_up
-    out.loc[valid.index, "score"] = 2.0 * prob_up - 1.0
+    prob_series = pd.Series(prob_up, index=valid.index)
 
-    long_mask = prob_up >= threshold
-    short_mask = prob_up <= (1.0 - threshold)
-    sig = np.where(long_mask, 1, np.where(short_mask, -1, 0))
-    out.loc[valid.index, "signal"] = sig
-
+    meta_trained = trained.get("meta_label")
     beh_params = _behavioral_params(effective_params)
-    if len(valid) > 0 and (
-        beh_params.get("enable_behavioral_gate", False)
-        or beh_params.get("enable_behavioral", True)
-    ):
-        regime_cols = [c for c in _BEHAVIORAL_FEATURE_COLUMNS if c in valid.columns]
-        behavior_feats = valid[regime_cols] if regime_cols else pd.DataFrame(index=valid.index)
-        gate_params = {**beh_params, "decision_threshold": threshold}
-        regime = classify_behavioral_regime(
-            behavior_feats,
-            gate_params,
-            context_df=valid,
+    behavior_feats = pd.DataFrame(index=valid.index)
+    context_feats = pd.DataFrame(index=valid.index)
+    if beh_params.get("enable_behavioral", False):
+        behavior_full, context_full = _build_behavior_context(
+            df,
+            base_strategies,
+            effective_params,
+            cross_asset_bars=cross_asset_bars,
+            quotes=quotes,
         )
-        if beh_params.get("enable_behavioral_gate", False):
-            pred_slice = out.loc[valid.index, ["prob_up", "signal"]].copy()
-            gated = apply_behavioral_gate(pred_slice, regime, gate_params)
-            out.loc[valid.index, "signal"] = gated["signal"].to_numpy()
-            out.loc[valid.index, "behavioral_regime"] = gated["behavioral_regime"].to_numpy()
-            out.loc[valid.index, "effective_threshold"] = gated["effective_threshold"].to_numpy()
-            out.loc[valid.index, "gate_adjusted"] = gated["gate_adjusted"].to_numpy()
-        else:
-            out.loc[valid.index, "behavioral_regime"] = regime.to_numpy()
+        behavior_feats = behavior_full.reindex(valid.index)
+        context_feats = context_full.reindex(valid.index)
+
+    stacked, _regime = _apply_inference_stack(
+        valid.index,
+        prob_series,
+        behavior_feats,
+        context_feats,
+        effective_params,
+        meta_trained=meta_trained,
+    )
+
+    for col in stacked.columns:
+        if col not in out.columns:
+            if stacked[col].dtype == object or str(stacked[col].dtype) == "bool":
+                out[col] = None
+            else:
+                out[col] = np.nan
+        out.loc[valid.index, col] = stacked[col].values
 
     out["signal"] = out["signal"].fillna(0).astype(int)
     return out
+
+
+def evaluate_config_on_holdout(
+    df: pd.DataFrame,
+    params: dict,
+    config_overrides: dict,
+    holdout_frac: float = 0.2,
+    cross_asset_bars: Optional[pd.DataFrame] = None,
+    quotes: Optional[pd.DataFrame] = None,
+) -> dict:
+    """
+    Train on the leading portion of ``df``, evaluate full inference stack on
+    the trailing holdout window. Used by ``scripts/eval_meta_learner.py``.
+    """
+    if df is None or len(df) < 50:
+        raise ValueError("Need at least 50 bars for holdout evaluation.")
+
+    n_holdout = max(int(len(df) * holdout_frac), 20)
+    train_df = df.iloc[:-n_holdout].copy()
+    holdout_df = df.iloc[-n_holdout:].copy()
+
+    run_params = dict(params)
+    run_params.update(config_overrides)
+    trained = train_stacked_meta_learner(
+        train_df,
+        run_params,
+        cross_asset_bars=cross_asset_bars,
+        quotes=quotes,
+    )
+    preds = predict_meta_learner(
+        holdout_df,
+        trained,
+        run_params,
+        cross_asset_bars=cross_asset_bars,
+        quotes=quotes,
+    )
+
+    valid = preds.dropna(subset=["prob_up"])
+    if len(valid) == 0:
+        return {"config": config_overrides, "metrics": {}, "metrics_by_regime": {}}
+
+    cost_bp = float(run_params.get("cost_bp", trained.get("cost_bp", 5.0)))
+    cost_frac = cost_bp / 1e4
+    fwd = _fwd_returns(holdout_df, run_params, valid.index).to_numpy()
+    sig = valid["signal"].fillna(0).astype(int).to_numpy()
+    prob = valid["prob_up"].to_numpy()
+    y_dummy = (prob >= 0.5).astype(int)
+
+    metrics = compute_trade_metrics(
+        prob, y_dummy, fwd, float(trained.get("decision_threshold", 0.55)), cost_frac, signal=sig
+    )
+    regime = valid.get("behavioral_regime", pd.Series("neutral", index=valid.index))
+    by_regime = compute_metrics_by_regime(sig, fwd, regime, cost_frac)
+    return {
+        "config": config_overrides,
+        "metrics": metrics,
+        "metrics_by_regime": by_regime,
+        "trained_metrics": trained.get("metrics", {}),
+    }

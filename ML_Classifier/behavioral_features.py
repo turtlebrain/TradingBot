@@ -33,6 +33,30 @@ from trading_indicators import _us_session_keys
 
 _EPS = 1e-9
 
+# Phase 2 v2 pruned behavioral schema.
+BEHAVIORAL_V2_COLUMNS = (
+    "score_consensus_mean",
+    "score_consensus_std",
+    "dist_open_atr",
+    "or_position",
+    "or_available",
+    "capitulation_score",
+    "flow_price_diverge",
+    "consensus_x_vol",
+    "open_dist_x_mom",
+    "diverge_x_consensus",
+)
+
+
+def or_coverage_pct(behavior_df: pd.DataFrame) -> float:
+    """Fraction of rows with a proper (non-proxy) opening-range anchor."""
+    if behavior_df is None or behavior_df.empty or "or_available" not in behavior_df.columns:
+        return float("nan")
+    s = behavior_df["or_available"].dropna()
+    if s.empty:
+        return float("nan")
+    return float(s.mean())
+
 # Regular US cash-session open in minutes from midnight (America/New_York).
 _DEFAULT_SESSION_OPEN_MINUTE = 9 * 60 + 30
 
@@ -136,7 +160,7 @@ def compute_opening_range_levels(
     Returns columns: ``session_open``, ``or_high``, ``or_low``, ``or_position``.
     """
     out = pd.DataFrame(index=bars.index)
-    for col in ("session_open", "or_high", "or_low", "or_position"):
+    for col in ("session_open", "or_high", "or_low", "or_position", "or_available"):
         out[col] = np.nan
 
     if bars is None or bars.empty or not isinstance(bars.index, pd.DatetimeIndex):
@@ -159,8 +183,17 @@ def compute_opening_range_levels(
 
         or_h = np.nan
         or_l = np.nan
+        had_or_window = bool(in_or.any())
+        proxy_or_end = session_open_minute + int(or_minutes)
+
         for ix in g_idx:
             if in_or.loc[ix]:
+                hi = float(bars.at[ix, "high"])
+                lo = float(bars.at[ix, "low"])
+                or_h = hi if not np.isfinite(or_h) else max(or_h, hi)
+                or_l = lo if not np.isfinite(or_l) else min(or_l, lo)
+            elif not had_or_window and g_min.loc[ix] < proxy_or_end:
+                # Fallback: data starts after 9:30 — proxy OR from early session bars.
                 hi = float(bars.at[ix, "high"])
                 lo = float(bars.at[ix, "low"])
                 or_h = hi if not np.isfinite(or_h) else max(or_h, hi)
@@ -169,6 +202,7 @@ def compute_opening_range_levels(
             if np.isfinite(or_h) and np.isfinite(or_l):
                 out.loc[ix, "or_high"] = or_h
                 out.loc[ix, "or_low"] = or_l
+                out.loc[ix, "or_available"] = 1.0 if had_or_window else 0.0
                 close = float(bars.at[ix, "close"])
                 rng = or_h - or_l
                 if rng > _EPS:
@@ -323,15 +357,6 @@ def build_behavioral_features(
         atr = _atr(bars, atr_window)
 
     close = bars["close"].astype(float)
-    blocks: List[pd.DataFrame] = []
-
-    if score_df is not None and not score_df.empty:
-        blocks.append(compute_score_consensus(score_df))
-    else:
-        empty_consensus = pd.DataFrame(index=bars.index)
-        empty_consensus["score_consensus_mean"] = np.nan
-        empty_consensus["score_consensus_std"] = np.nan
-        blocks.append(empty_consensus)
 
     or_levels = compute_opening_range_levels(
         bars,
@@ -339,14 +364,16 @@ def build_behavioral_features(
         session_open_minute=session_open_minute,
         tz=tz,
     )
-    blocks.append(compute_session_open_distance(close, or_levels["session_open"], atr))
-    blocks.append(
-        compute_or_distances(close, or_levels["or_high"], or_levels["or_low"], atr)
-    )
-    blocks.append(or_levels[["or_position"]])
+    enable_consensus = bool(p.get("enable_behavioral_consensus", True))
+    enable_anchoring = bool(p.get("enable_behavioral_anchoring", True))
+    enable_flow = bool(p.get("enable_behavioral_flow", True))
 
-    blocks.append(compute_price_accel_atr(close, atr))
-    blocks.append(compute_wick_ratios(bars))
+    consensus_df = pd.DataFrame(index=bars.index)
+    if enable_consensus and score_df is not None and not score_df.empty:
+        consensus_df = compute_score_consensus(score_df)
+    else:
+        consensus_df["score_consensus_mean"] = np.nan
+        consensus_df["score_consensus_std"] = np.nan
 
     ret_1 = _context_series(context_df, "ret_1_log")
     if ret_1 is None:
@@ -364,15 +391,49 @@ def build_behavioral_features(
     if vol_15 is None:
         vol_15 = np.log(close).diff().rolling(15, min_periods=15).std()
 
+    mom = _context_series(context_df, "mom_10_atr")
+    if mom is None:
+        mom = (close - close.shift(10)) / (atr.astype(float) + _EPS)
+
+    pruned = pd.DataFrame(index=bars.index)
+    pruned["score_consensus_mean"] = consensus_df["score_consensus_mean"]
+    pruned["score_consensus_std"] = consensus_df["score_consensus_std"]
+
+    if enable_anchoring:
+        pruned["dist_open_atr"] = compute_session_open_distance(
+            close, or_levels["session_open"], atr
+        )
+        pruned["or_position"] = or_levels["or_position"]
+        pruned["or_available"] = or_levels["or_available"]
+
+    if enable_flow:
+        if volume_z is not None:
+            pruned["capitulation_score"] = compute_capitulation_score(ret_1, volume_z, vol_15)
+        else:
+            pruned["capitulation_score"] = np.nan
+        ofi_proxy = _ofi_proxy_from_context(bars, context_df, ofi_bar_window)
+        pruned["flow_price_diverge"] = compute_flow_price_diverge(ret_1, ofi_proxy)
+
+    # Explicit interactions (Phase 2 v2).
     if volume_z is not None:
-        blocks.append(compute_capitulation_score(ret_1, volume_z, vol_15))
+        pruned["consensus_x_vol"] = (
+            consensus_df["score_consensus_std"].astype(float) * volume_z.astype(float)
+        )
     else:
-        cap = pd.DataFrame(index=bars.index)
-        cap["capitulation_score"] = np.nan
-        blocks.append(cap)
+        pruned["consensus_x_vol"] = np.nan
 
-    ofi_proxy = _ofi_proxy_from_context(bars, context_df, ofi_bar_window)
-    blocks.append(compute_flow_price_diverge(ret_1, ofi_proxy))
+    dist_open = pruned.get("dist_open_atr")
+    if dist_open is not None:
+        pruned["open_dist_x_mom"] = dist_open.astype(float) * mom.astype(float)
+    else:
+        pruned["open_dist_x_mom"] = np.nan
 
-    feats = pd.concat(blocks, axis=1)
-    return feats.replace([np.inf, -np.inf], np.nan)
+    if "flow_price_diverge" in pruned.columns:
+        pruned["diverge_x_consensus"] = (
+            pruned["flow_price_diverge"].astype(float)
+            * consensus_df["score_consensus_std"].astype(float)
+        )
+    else:
+        pruned["diverge_x_consensus"] = np.nan
+
+    return pruned.replace([np.inf, -np.inf], np.nan)

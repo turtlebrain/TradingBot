@@ -34,14 +34,20 @@ def save_training_artifacts(result: dict, notes: str = "") -> str:
     paths = build_paths(version)
     os.makedirs(paths["base"], exist_ok=True)
 
-    # Save pipeline separately (joblib handles sklearn objects)
     joblib.dump(result["pipeline"], paths["model"])
 
-    # Save the rest of the result dict (minus pipeline) as JSON
+    meta_block = result.get("meta_label") or {}
+    if meta_block.get("trained") and meta_block.get("pipeline") is not None:
+        joblib.dump(meta_block["pipeline"], os.path.join(paths["base"], "meta_label.pkl"))
+
     result_copy = {k: v for k, v in result.items() if k != "pipeline"}
+    if "meta_label" in result_copy and isinstance(result_copy["meta_label"], dict):
+        meta_copy = dict(result_copy["meta_label"])
+        meta_copy.pop("pipeline", None)
+        result_copy["meta_label"] = meta_copy
     result_copy["notes"] = notes
     with open(paths["metadata"], "w") as f:
-        json.dump(result_copy, f, indent=2)
+        json.dump(result_copy, f, indent=2, default=str)
 
     return version
 
@@ -60,15 +66,21 @@ def load_artifacts(version: Optional[str] = None) -> dict:
         raise FileNotFoundError("No persisted models found.")
     paths = build_paths(ver)
 
-    # Load pipeline
     pipeline = joblib.load(paths["model"])
 
-    # Load metadata
     with open(paths["metadata"], "r") as f:
         meta = json.load(f)
 
-    # Rebuild result package
     result = {"pipeline": pipeline, **meta, "version": ver}
+
+    meta_path = os.path.join(paths["base"], "meta_label.pkl")
+    if os.path.exists(meta_path):
+        meta_pipeline = joblib.load(meta_path)
+        meta_block = dict(result.get("meta_label") or {})
+        meta_block["pipeline"] = meta_pipeline
+        meta_block["trained"] = True
+        result["meta_label"] = meta_block
+
     return result
 
 def align_features_for_inference(feats: "pd.DataFrame", expected_columns: list) -> "pd.DataFrame":

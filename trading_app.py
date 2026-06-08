@@ -1979,6 +1979,21 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self._behavioral_vars = {
             "enable_behavioral": tk.BooleanVar(value=initial_behavioral["enable_behavioral"]),
             "enable_behavioral_gate": tk.BooleanVar(value=initial_behavioral["enable_behavioral_gate"]),
+            "behavioral_in_direction_model": tk.BooleanVar(
+                value=initial_behavioral.get("behavioral_in_direction_model", False)
+            ),
+            "enable_meta_label": tk.BooleanVar(value=initial_behavioral.get("enable_meta_label", False)),
+            "meta_threshold": tk.DoubleVar(value=initial_behavioral.get("meta_threshold", 0.55)),
+            "enable_behavioral_consensus": tk.BooleanVar(
+                value=initial_behavioral.get("enable_behavioral_consensus", True)
+            ),
+            "enable_behavioral_anchoring": tk.BooleanVar(
+                value=initial_behavioral.get("enable_behavioral_anchoring", True)
+            ),
+            "enable_behavioral_flow": tk.BooleanVar(
+                value=initial_behavioral.get("enable_behavioral_flow", True)
+            ),
+            "gate_learn_on_train": tk.BooleanVar(value=initial_behavioral.get("gate_learn_on_train", True)),
             "or_minutes": tk.IntVar(value=initial_behavioral["or_minutes"]),
             "ofi_bar_window": tk.IntVar(value=initial_behavioral["ofi_bar_window"]),
             "consensus_std_chop_threshold": tk.DoubleVar(
@@ -2000,6 +2015,12 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 value=initial_behavioral["gate_chop_threshold_bump"]
             ),
             "gate_opening_block": tk.BooleanVar(value=initial_behavioral["gate_opening_block"]),
+            "meta_learning_rate": tk.DoubleVar(value=initial_behavioral.get("meta_learning_rate", 0.05)),
+            "meta_max_iter": tk.IntVar(value=initial_behavioral.get("meta_max_iter", 150)),
+            "meta_max_depth": tk.IntVar(value=initial_behavioral.get("meta_max_depth", 4)),
+            "meta_l2_regularization": tk.DoubleVar(
+                value=initial_behavioral.get("meta_l2_regularization", 0.1)
+            ),
         }
 
         self._build_strategy_panel()
@@ -2033,11 +2054,18 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         ).pack(anchor="w")
         self._behavioral_gate_cb = ttk.Checkbutton(
             toggles,
-            text="Behavioral gate",
+            text="Behavioral gate (learned; off when meta-label on)",
             variable=self._behavioral_vars["enable_behavioral_gate"],
             command=self._update_behavioral_status_label,
         )
         self._behavioral_gate_cb.pack(anchor="w")
+        self._meta_label_cb = ttk.Checkbutton(
+            toggles,
+            text="Meta-label filter",
+            variable=self._behavioral_vars["enable_meta_label"],
+            command=self._on_meta_label_toggle,
+        )
+        self._meta_label_cb.pack(anchor="w")
 
         beh_btn_row = ttk.Frame(behavioral_frame)
         beh_btn_row.pack(fill="x", padx=5, pady=(0, 4))
@@ -2148,6 +2176,15 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         )
         self.cross_asset_status_label.pack(fill="x", padx=10, pady=(0, 2))
 
+        self.behavioral_detail_label = ttk.Label(
+            self.results_frame,
+            text="",
+            anchor="w",
+            justify="left",
+            wraplength=220,
+        )
+        self.behavioral_detail_label.pack(fill="x", padx=10, pady=(0, 4))
+
         # Populate model versions only after result labels are initialized,
         # because selection can immediately trigger result rendering.
         self.populate_version_selector()
@@ -2186,26 +2223,45 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 
     def _collect_behavioral_params(self) -> dict:
         params = {k: var.get() for k, var in self._behavioral_vars.items()}
-        if not params.get("enable_behavioral", True):
+        if not params.get("enable_behavioral", False):
+            params["enable_behavioral_gate"] = False
+            params["enable_meta_label"] = False
+        if params.get("enable_meta_label"):
             params["enable_behavioral_gate"] = False
         return params
+
+    def _on_meta_label_toggle(self) -> None:
+        if self._behavioral_vars["enable_meta_label"].get():
+            if not self._behavioral_vars["enable_behavioral"].get():
+                self._behavioral_vars["enable_meta_label"].set(False)
+            else:
+                self._behavioral_vars["enable_behavioral_gate"].set(False)
+        self._sync_behavioral_ui_state()
 
     def _on_behavioral_features_toggle(self) -> None:
         if not self._behavioral_vars["enable_behavioral"].get():
             self._behavioral_vars["enable_behavioral_gate"].set(False)
+            self._behavioral_vars["enable_meta_label"].set(False)
         self._sync_behavioral_ui_state()
 
     def _sync_behavioral_ui_state(self) -> None:
-        """Gate and advanced params require behavioral features to be enabled."""
+        """Gate and meta-label require behavioral features; gate excludes meta-label."""
         features_on = bool(self._behavioral_vars["enable_behavioral"].get())
+        meta_on = bool(self._behavioral_vars["enable_meta_label"].get())
         widget_state = "normal" if features_on else "disabled"
 
         if hasattr(self, "_behavioral_gate_cb"):
-            self._behavioral_gate_cb.config(state=widget_state)
+            gate_state = "normal" if features_on and not meta_on else "disabled"
+            self._behavioral_gate_cb.config(state=gate_state)
+        if hasattr(self, "_meta_label_cb"):
+            self._meta_label_cb.config(state=widget_state)
         if hasattr(self, "_behavioral_b_btn"):
             self._behavioral_b_btn.config(state=widget_state)
 
         if not features_on:
+            self._behavioral_vars["enable_behavioral_gate"].set(False)
+            self._behavioral_vars["enable_meta_label"].set(False)
+        if meta_on:
             self._behavioral_vars["enable_behavioral_gate"].set(False)
 
         self._update_behavioral_status_label()
@@ -2215,14 +2271,18 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             return
         if not self._behavioral_vars["enable_behavioral"].get():
             self.behavioral_status_label.config(
-                text=f"Behavioral: off ({self._current_timeframe})"
+                text=f"Behavioral: off ({self._current_timeframe})",
             )
             return
-        feats = "on"
         gate = "on" if self._behavioral_vars["enable_behavioral_gate"].get() else "off"
+        meta = "on" if self._behavioral_vars["enable_meta_label"].get() else "off"
         or_min = self._behavioral_vars["or_minutes"].get()
+        meta_t = self._behavioral_vars["meta_threshold"].get()
         self.behavioral_status_label.config(
-            text=f"Behavioral: features {feats}, gate {gate} | OR {or_min}m ({self._current_timeframe})"
+            text=(
+                f"Behavioral: features on | gate {gate} | meta {meta} "
+                f"(t={meta_t:.2f}) | OR {or_min}m ({self._current_timeframe})"
+            ),
         )
 
     def _hydrate_behavioral_from_inference_params(self, inference_params: dict) -> None:
@@ -2291,6 +2351,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             self.meta_model_result.get("metrics", {}),
             cross_asset_info=ca_info,
             training_context=ctx,
+            artifact=self.meta_model_result,
         )
         self._hydrate_behavioral_from_inference_params(
             self.meta_model_result.get("inference_params", {})
@@ -2426,21 +2487,27 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             model.get("metrics", {}),
             cross_asset_info=cross_asset_status,
             training_context=training_context,
+            artifact=model,
         )
         self.populate_version_selector()
         if model.get("version"):
             self.version_var.set(model["version"])
         self._hydrate_behavioral_from_inference_params(model.get("inference_params", {}))
 
-    def show_training_results(self, metrics, cross_asset_info=None, training_context=None):
+    def show_training_results(self, metrics, cross_asset_info=None, training_context=None, artifact=None):
         """Render metrics + training-context labels for either a just-trained
         model (``cross_asset_info`` carries the live aligned-bar counts) or a
         loaded artifact (``cross_asset_info`` may carry only the saved
         ``aligned_bars`` from training). ``training_context`` populates the
-        "Trained on:" header line."""
+        "Trained on:" header line. ``artifact`` supplies regime/meta/OR detail."""
         for key, label in self.result_labels.items():
             value = metrics.get(key)
-            label.config(text="---" if value is None else f"{value:.4f}")
+            if value is None:
+                label.config(text="---")
+            elif isinstance(value, float):
+                label.config(text=f"{value:.4f}")
+            else:
+                label.config(text=str(value))
 
         if hasattr(self, "trained_on_label"):
             if training_context:
@@ -2475,6 +2542,39 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 else:
                     text = f"Cross-asset: {symbol}"
                 self.cross_asset_status_label.config(text=text)
+
+        if hasattr(self, "behavioral_detail_label"):
+            lines = []
+            art = artifact or {}
+            or_cov = art.get("or_coverage_pct")
+            if or_cov is not None:
+                try:
+                    if or_cov == or_cov:
+                        lines.append(f"OR coverage: {100.0 * float(or_cov):.1f}%")
+                except (TypeError, ValueError):
+                    pass
+            meta_block = art.get("meta_label") or {}
+            meta_m = meta_block.get("metrics") or {}
+            if meta_m.get("meta_train_rows") is not None:
+                lines.append(f"Meta train rows: {meta_m['meta_train_rows']}")
+            if metrics.get("meta_positive_rate") is not None:
+                lines.append(f"Meta positive rate: {metrics['meta_positive_rate']:.3f}")
+            by_regime = art.get("metrics_by_regime") or {}
+            if by_regime:
+                snippets = []
+                for name in ("opening", "chop", "herding", "neutral"):
+                    if name not in by_regime:
+                        continue
+                    r = by_regime[name]
+                    edge = r.get("avg_edge_bp")
+                    if edge is None or (isinstance(edge, float) and edge != edge):
+                        continue
+                    snippets.append(f"{name} {edge:+.1f}bp")
+                if snippets:
+                    lines.append("Regime edge: " + ", ".join(snippets))
+            self.behavioral_detail_label.config(
+                text="\n".join(lines) if lines else "",
+            )
 
     # ------------------------------------------------------------------
     # Param dialog
@@ -2532,6 +2632,19 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             ("Herd consensus mean threshold", "consensus_mean_herd_threshold", "float"),
             ("Chop momentum threshold", "chop_momentum_threshold", "float"),
         ]
+        group_rows = [
+            ("Consensus feature group", "enable_behavioral_consensus", "bool"),
+            ("Anchoring / OR group", "enable_behavioral_anchoring", "bool"),
+            ("Flow / divergence group", "enable_behavioral_flow", "bool"),
+            ("Include behavioral in direction model", "behavioral_in_direction_model", "bool"),
+        ]
+        meta_rows = [
+            ("Meta-label threshold", "meta_threshold", "float"),
+            ("Meta learning rate", "meta_learning_rate", "float"),
+            ("Meta max iter", "meta_max_iter", "int"),
+            ("Meta max depth", "meta_max_depth", "int"),
+            ("Meta L2 regularization", "meta_l2_regularization", "float"),
+        ]
         gate_rows = [
             ("Opening gate threshold bump", "gate_opening_threshold_bump", "float"),
             ("Chop gate threshold bump", "gate_chop_threshold_bump", "float"),
@@ -2542,13 +2655,59 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             row=row_idx, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 4)
         )
         row_idx += 1
-        for label_text, var_key, _kind in feature_rows:
+        for label_text, var_key, kind in feature_rows:
             ttk.Label(dialog, text=label_text).grid(
                 row=row_idx, column=0, sticky="w", padx=10, pady=3
             )
-            ttk.Entry(dialog, textvariable=self._behavioral_vars[var_key], width=14).grid(
+            if kind == "bool":
+                ttk.Checkbutton(dialog, variable=self._behavioral_vars[var_key]).grid(
+                    row=row_idx, column=1, sticky="w", padx=10, pady=3
+                )
+            else:
+                ttk.Entry(dialog, textvariable=self._behavioral_vars[var_key], width=14).grid(
+                    row=row_idx, column=1, sticky="w", padx=10, pady=3
+                )
+            row_idx += 1
+
+        ttk.Label(dialog, text="Feature groups", font=("", 9, "bold")).grid(
+            row=row_idx, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 4)
+        )
+        row_idx += 1
+        for label_text, var_key, kind in group_rows:
+            ttk.Label(dialog, text=label_text).grid(
+                row=row_idx, column=0, sticky="w", padx=10, pady=3
+            )
+            ttk.Checkbutton(dialog, variable=self._behavioral_vars[var_key]).grid(
                 row=row_idx, column=1, sticky="w", padx=10, pady=3
             )
+            row_idx += 1
+
+        meta_enabled = bool(self._behavioral_vars["enable_meta_label"].get())
+        ttk.Label(dialog, text="Meta-label params", font=("", 9, "bold")).grid(
+            row=row_idx, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 4)
+        )
+        row_idx += 1
+        meta_widgets = []
+        for label_text, var_key, kind in meta_rows:
+            lbl = ttk.Label(dialog, text=label_text)
+            lbl.grid(row=row_idx, column=0, sticky="w", padx=10, pady=3)
+            if kind == "bool":
+                w = ttk.Checkbutton(dialog, variable=self._behavioral_vars[var_key])
+            else:
+                w = ttk.Entry(dialog, textvariable=self._behavioral_vars[var_key], width=14)
+            w.grid(row=row_idx, column=1, sticky="w", padx=10, pady=3)
+            meta_widgets.extend((lbl, w))
+            row_idx += 1
+
+        meta_state = "normal" if meta_enabled else "disabled"
+        for widget in meta_widgets:
+            widget.config(state=meta_state)
+        if not meta_enabled:
+            ttk.Label(
+                dialog,
+                text="Enable Meta-label filter to edit meta-label params.",
+                foreground="gray",
+            ).grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
             row_idx += 1
 
         gate_enabled = bool(self._behavioral_vars["enable_behavioral_gate"].get())
@@ -2768,12 +2927,28 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         feature_cols = trained.get("feature_columns") or []
         model_needs_behavioral = any(
             str(c).startswith(
-                ("score_consensus_", "dist_open_atr", "dist_or_", "capitulation_", "flow_price_")
+                (
+                    "score_consensus_",
+                    "dist_open_atr",
+                    "dist_or_",
+                    "capitulation_",
+                    "flow_price_",
+                    "consensus_x_",
+                    "open_dist_x_",
+                    "diverge_x_",
+                )
             )
-            or str(c) in ("or_position", "price_accel_atr", "upper_wick_ratio", "lower_wick_ratio")
+            or str(c)
+            in (
+                "or_position",
+                "or_available",
+                "price_accel_atr",
+                "upper_wick_ratio",
+                "lower_wick_ratio",
+            )
             for c in feature_cols
         )
-        if model_needs_behavioral and not params.get("enable_behavioral", True):
+        if model_needs_behavioral and not params.get("enable_behavioral", False):
             messagebox.showwarning(
                 "Run Strategy",
                 "This model was trained with behavioral features. Re-enable "
