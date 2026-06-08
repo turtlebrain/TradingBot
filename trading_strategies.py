@@ -280,7 +280,16 @@ def meta_learner_signals(
     if "volume" in data.columns:
         signals["volume"] = data["volume"]
 
-    cols = [c for c in ("prob_up", "prob_down", "score", "signal") if c in out.columns]
+    output_cols = (
+        "prob_up",
+        "prob_down",
+        "score",
+        "signal",
+        "behavioral_regime",
+        "effective_threshold",
+        "gate_adjusted",
+    )
+    cols = [c for c in output_cols if c in out.columns]
     signals = signals.join(out[cols], how="left")
     signals["signal"] = signals["signal"].fillna(0).astype(int)
     signals["positions"] = signals["signal"].cumsum()

@@ -10,6 +10,10 @@ This module is the single ML mode of the trading bot. It consumes:
     ``ML_Classifier.microstructure_features`` (realized vol, signed-volume
     absorption, bar-based OFI, optional cross-asset basis z-score, optional
     L1-quote OFI, optional session-phase one-hots)
+  * the Phase 1B behavioral block from
+    ``ML_Classifier.behavioral_features`` (consensus, anchoring, OR distance,
+    chase, capitulation, flow-price divergence, wick ratios) with an optional
+    post-prediction gate from ``ML_Classifier.behavioral_gate``
 
 It applies a gradient-boosted classifier with purged + embargoed
 walk-forward CV and emits +1/-1/0 trade signals via ``predict_meta_learner``.
@@ -38,6 +42,8 @@ from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.metrics import accuracy_score, brier_score_loss
 
 import trading_strategies as strategies
+from ML_Classifier.behavioral_features import build_behavioral_features
+from ML_Classifier.behavioral_gate import apply_behavioral_gate, classify_behavioral_regime
 from ML_Classifier.microstructure_features import build_microstructure_features
 from ML_Classifier.ml_trading_persistence import save_training_artifacts
 
@@ -82,6 +88,68 @@ def _microstructure_params(params: dict) -> dict:
     out = dict(_MICROSTRUCTURE_DEFAULTS)
     if params:
         for key in _MICROSTRUCTURE_PARAM_KEYS:
+            if key in params:
+                out[key] = params[key]
+    return out
+
+
+# Params keys passed through to ML_Classifier.behavioral_features / behavioral_gate.
+_BEHAVIORAL_PARAM_KEYS = (
+    "enable_behavioral",
+    "enable_behavioral_gate",
+    "or_minutes",
+    "session_open_minute",
+    "tz",
+    "ofi_bar_window",
+    "consensus_std_chop_threshold",
+    "consensus_std_herd_threshold",
+    "consensus_mean_herd_threshold",
+    "chop_momentum_threshold",
+    "gate_opening_threshold_bump",
+    "gate_chop_threshold_bump",
+    "gate_opening_block",
+)
+
+_BEHAVIORAL_DEFAULTS = {
+    "enable_behavioral": True,
+    "enable_behavioral_gate": False,
+    "or_minutes": 15,
+    "session_open_minute": 9 * 60 + 30,
+    "ofi_bar_window": 30,
+    "consensus_std_chop_threshold": 0.35,
+    "consensus_std_herd_threshold": 0.15,
+    "consensus_mean_herd_threshold": 0.25,
+    "chop_momentum_threshold": 0.15,
+    "gate_opening_threshold_bump": 0.05,
+    "gate_chop_threshold_bump": 0.03,
+    "gate_opening_block": False,
+    "tz": "America/New_York",
+}
+
+_BEHAVIORAL_FEATURE_COLUMNS = (
+    "score_consensus_mean",
+    "score_consensus_std",
+    "dist_open_atr",
+    "dist_or_high_atr",
+    "dist_or_low_atr",
+    "or_position",
+    "price_accel_atr",
+    "upper_wick_ratio",
+    "lower_wick_ratio",
+    "capitulation_score",
+    "flow_price_diverge",
+)
+
+
+def _behavioral_params(params: dict) -> dict:
+    """Subset of ``params`` forwarded to behavioral feature / gate builders."""
+    out = dict(_BEHAVIORAL_DEFAULTS)
+    if params:
+        for key in _BEHAVIORAL_PARAM_KEYS:
+            if key in params:
+                out[key] = params[key]
+        # Shared with regime / behavioral builders.
+        for key in ("atr_window", "vol_span", "decision_threshold"):
             if key in params:
                 out[key] = params[key]
     return out
@@ -165,12 +233,11 @@ def build_score_features(
     """
     Build the meta-learner feature matrix.
 
-    Combines per-strategy continuous scores with regime context and the
-    intraday microstructure block (Phase 1A: realized vol, signed-volume
-    absorption, bar-based OFI, optional cross-asset basis z-score, optional
-    L1-quote OFI, optional session-phase one-hots). The whole frame is then
-    shifted by one bar so that no feature leaks information from the bar a
-    decision is made on.
+    Combines per-strategy continuous scores with regime context, the
+    intraday microstructure block (Phase 1A), and the behavioral block
+    (Phase 1B: consensus, anchoring, OR distance, chase, capitulation,
+    divergence, wicks). The whole frame is then shifted by one bar so that
+    no feature leaks information from the bar a decision is made on.
 
     ``cross_asset_bars`` is required to populate the basis z-score column
     when ``enable_basis`` is true. ``quotes`` is required to populate the
@@ -184,6 +251,7 @@ def build_score_features(
     regime_df = _regime_features(df, params)
 
     blocks: List[pd.DataFrame] = [score_df, regime_df]
+    micro_df = pd.DataFrame(index=df.index)
 
     micro_params = _microstructure_params(params)
     if micro_params.get("enable_microstructure", True):
@@ -195,6 +263,23 @@ def build_score_features(
         )
         if not micro_df.empty:
             blocks.append(micro_df)
+
+    beh_params = _behavioral_params(params)
+    if beh_params.get("enable_behavioral", True):
+        context_parts = [regime_df]
+        if not micro_df.empty:
+            context_parts.append(micro_df)
+        context_df = pd.concat(context_parts, axis=1)
+        atr_window = int(params.get("atr_window", 14))
+        behavior_df = build_behavioral_features(
+            df,
+            beh_params,
+            score_df=score_df,
+            context_df=context_df,
+            atr=_atr(df, atr_window),
+        )
+        if not behavior_df.empty:
+            blocks.append(behavior_df)
 
     feats = pd.concat(blocks, axis=1)
     feats = feats.replace([np.inf, -np.inf], np.nan)
@@ -417,6 +502,7 @@ def train_stacked_meta_learner(
         "decision_threshold": threshold,
     }
     inference_params.update(_microstructure_params(params))
+    inference_params.update(_behavioral_params(params))
 
     # Snapshot of *what was trained on* (symbol / timeframe / dates / CA pair).
     # The metalearner does not interpret these fields, it just round-trips them
@@ -470,6 +556,10 @@ def _estimate_warmup(base_strategies: Iterable[dict], params: dict) -> int:
             candidates.append(int(micro.get("basis_window", 60)))
         if micro.get("enable_quote_ofi", False):
             candidates.append(int(micro.get("ofi_quote_window", 100)))
+    beh = _behavioral_params(params)
+    if beh.get("enable_behavioral", True):
+        candidates.append(int(beh.get("or_minutes", 15)) + 10)
+        candidates.append(int(beh.get("ofi_bar_window", 30)))
     for spec in base_strategies:
         sp = spec.get("params", {}) or {}
         for key in ("long_window", "lookback", "distance", "short_window", "atr_window"):
@@ -507,10 +597,17 @@ def predict_meta_learner(
 
     base_strategies = trained.get("base_strategies") or params.get("base_strategies", [])
     feature_cols: List[str] = trained.get("feature_columns", [])
-    threshold = float(trained.get("decision_threshold", params.get("decision_threshold", 0.55)))
 
-    effective_params = dict(params or {})
-    effective_params.update(trained.get("inference_params", {}))
+    effective_params = dict(trained.get("inference_params", {}))
+    if params:
+        effective_params.update(params)
+
+    threshold = float(
+        effective_params.get(
+            "decision_threshold",
+            trained.get("decision_threshold", 0.55),
+        )
+    )
 
     feats = build_score_features(
         df,
@@ -542,5 +639,29 @@ def predict_meta_learner(
     short_mask = prob_up <= (1.0 - threshold)
     sig = np.where(long_mask, 1, np.where(short_mask, -1, 0))
     out.loc[valid.index, "signal"] = sig
+
+    beh_params = _behavioral_params(effective_params)
+    if len(valid) > 0 and (
+        beh_params.get("enable_behavioral_gate", False)
+        or beh_params.get("enable_behavioral", True)
+    ):
+        regime_cols = [c for c in _BEHAVIORAL_FEATURE_COLUMNS if c in valid.columns]
+        behavior_feats = valid[regime_cols] if regime_cols else pd.DataFrame(index=valid.index)
+        gate_params = {**beh_params, "decision_threshold": threshold}
+        regime = classify_behavioral_regime(
+            behavior_feats,
+            gate_params,
+            context_df=valid,
+        )
+        if beh_params.get("enable_behavioral_gate", False):
+            pred_slice = out.loc[valid.index, ["prob_up", "signal"]].copy()
+            gated = apply_behavioral_gate(pred_slice, regime, gate_params)
+            out.loc[valid.index, "signal"] = gated["signal"].to_numpy()
+            out.loc[valid.index, "behavioral_regime"] = gated["behavioral_regime"].to_numpy()
+            out.loc[valid.index, "effective_threshold"] = gated["effective_threshold"].to_numpy()
+            out.loc[valid.index, "gate_adjusted"] = gated["gate_adjusted"].to_numpy()
+        else:
+            out.loc[valid.index, "behavioral_regime"] = regime.to_numpy()
+
     out["signal"] = out["signal"].fillna(0).astype(int)
     return out

@@ -1959,6 +1959,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self._current_timeframe = tf_presets.DEFAULT_TIMEFRAME
 
         initial_training = tf_presets.get_training_presets(self._current_timeframe)
+        initial_behavioral = tf_presets.get_behavioral_presets(self._current_timeframe)
 
         # Training params backed by Tk variables so the dialog edits persist.
         self._training_vars = {
@@ -1973,6 +1974,32 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             "learning_rate": tk.DoubleVar(value=initial_training["learning_rate"]),
             "cost_bp": tk.DoubleVar(value=initial_training["cost_bp"]),
             "atr_window": tk.IntVar(value=initial_training["atr_window"]),
+        }
+
+        self._behavioral_vars = {
+            "enable_behavioral": tk.BooleanVar(value=initial_behavioral["enable_behavioral"]),
+            "enable_behavioral_gate": tk.BooleanVar(value=initial_behavioral["enable_behavioral_gate"]),
+            "or_minutes": tk.IntVar(value=initial_behavioral["or_minutes"]),
+            "ofi_bar_window": tk.IntVar(value=initial_behavioral["ofi_bar_window"]),
+            "consensus_std_chop_threshold": tk.DoubleVar(
+                value=initial_behavioral["consensus_std_chop_threshold"]
+            ),
+            "consensus_std_herd_threshold": tk.DoubleVar(
+                value=initial_behavioral["consensus_std_herd_threshold"]
+            ),
+            "consensus_mean_herd_threshold": tk.DoubleVar(
+                value=initial_behavioral["consensus_mean_herd_threshold"]
+            ),
+            "chop_momentum_threshold": tk.DoubleVar(
+                value=initial_behavioral["chop_momentum_threshold"]
+            ),
+            "gate_opening_threshold_bump": tk.DoubleVar(
+                value=initial_behavioral["gate_opening_threshold_bump"]
+            ),
+            "gate_chop_threshold_bump": tk.DoubleVar(
+                value=initial_behavioral["gate_chop_threshold_bump"]
+            ),
+            "gate_opening_block": tk.BooleanVar(value=initial_behavioral["gate_opening_block"]),
         }
 
         self._build_strategy_panel()
@@ -1991,6 +2018,51 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             strategy_param_getter=self.get_strategy_params,
         )
         self.base_section.pack(fill="x", pady=5)
+
+        # --- Behavioral features / gate ---
+        behavioral_frame = ttk.LabelFrame(panel, text="Behavioral")
+        behavioral_frame.pack(fill="x", padx=5, pady=5)
+
+        toggles = ttk.Frame(behavioral_frame)
+        toggles.pack(fill="x", padx=5, pady=(4, 2))
+        ttk.Checkbutton(
+            toggles,
+            text="Behavioral features",
+            variable=self._behavioral_vars["enable_behavioral"],
+            command=self._on_behavioral_features_toggle,
+        ).pack(anchor="w")
+        self._behavioral_gate_cb = ttk.Checkbutton(
+            toggles,
+            text="Behavioral gate",
+            variable=self._behavioral_vars["enable_behavioral_gate"],
+            command=self._update_behavioral_status_label,
+        )
+        self._behavioral_gate_cb.pack(anchor="w")
+
+        beh_btn_row = ttk.Frame(behavioral_frame)
+        beh_btn_row.pack(fill="x", padx=5, pady=(0, 4))
+        self._behavioral_b_btn = ttk.Button(
+            beh_btn_row,
+            text="B",
+            width=3,
+            bootstyle=INFO,
+            command=self.open_behavioral_param_dialog,
+        )
+        self._behavioral_b_btn.pack(side="left")
+        ttk.Label(
+            beh_btn_row,
+            text="Advanced behavioral params",
+        ).pack(side="left", padx=(6, 0))
+
+        self.behavioral_status_label = ttk.Label(
+            behavioral_frame,
+            text="Behavioral: ---",
+            anchor="w",
+            justify="left",
+            wraplength=220,
+        )
+        self.behavioral_status_label.pack(fill="x", padx=10, pady=(0, 4))
+        self._sync_behavioral_ui_state()
 
         # --- Train + Params button row ---
         btn_row = ttk.Frame(panel)
@@ -2083,27 +2155,84 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
     # ------------------------------------------------------------------
     # Timeframe-aware defaults (see timeframe_presets.py)
     # ------------------------------------------------------------------
-    def apply_timeframe_presets(self, timeframe: str) -> None:
-        """Load training + indicator defaults for ``timeframe`` into this panel."""
-        tf = tf_presets.normalize_timeframe(timeframe)
-        self._current_timeframe = tf
-
-        training = tf_presets.get_training_presets(tf)
-        for key, var in self._training_vars.items():
-            if key not in training:
+    @staticmethod
+    def _apply_preset_to_vars(preset: dict, var_map: dict) -> None:
+        for key, var in var_map.items():
+            if key not in preset:
                 continue
-            value = training[key]
-            if isinstance(var, tk.StringVar):
+            value = preset[key]
+            if isinstance(var, tk.BooleanVar):
+                var.set(bool(value))
+            elif isinstance(var, tk.StringVar):
                 var.set(str(value))
             elif isinstance(var, tk.DoubleVar):
                 var.set(float(value))
             else:
                 var.set(int(value))
 
+    def apply_timeframe_presets(self, timeframe: str) -> None:
+        """Load training + behavioral + indicator defaults for ``timeframe``."""
+        tf = tf_presets.normalize_timeframe(timeframe)
+        self._current_timeframe = tf
+
+        self._apply_preset_to_vars(tf_presets.get_training_presets(tf), self._training_vars)
+        self._apply_preset_to_vars(tf_presets.get_behavioral_presets(tf), self._behavioral_vars)
+        self._sync_behavioral_ui_state()
+
         if hasattr(self, "base_section"):
             self.base_section.apply_indicator_presets(
                 tf_presets.get_all_indicator_presets(tf)
             )
+
+    def _collect_behavioral_params(self) -> dict:
+        params = {k: var.get() for k, var in self._behavioral_vars.items()}
+        if not params.get("enable_behavioral", True):
+            params["enable_behavioral_gate"] = False
+        return params
+
+    def _on_behavioral_features_toggle(self) -> None:
+        if not self._behavioral_vars["enable_behavioral"].get():
+            self._behavioral_vars["enable_behavioral_gate"].set(False)
+        self._sync_behavioral_ui_state()
+
+    def _sync_behavioral_ui_state(self) -> None:
+        """Gate and advanced params require behavioral features to be enabled."""
+        features_on = bool(self._behavioral_vars["enable_behavioral"].get())
+        widget_state = "normal" if features_on else "disabled"
+
+        if hasattr(self, "_behavioral_gate_cb"):
+            self._behavioral_gate_cb.config(state=widget_state)
+        if hasattr(self, "_behavioral_b_btn"):
+            self._behavioral_b_btn.config(state=widget_state)
+
+        if not features_on:
+            self._behavioral_vars["enable_behavioral_gate"].set(False)
+
+        self._update_behavioral_status_label()
+
+    def _update_behavioral_status_label(self) -> None:
+        if not hasattr(self, "behavioral_status_label"):
+            return
+        if not self._behavioral_vars["enable_behavioral"].get():
+            self.behavioral_status_label.config(
+                text=f"Behavioral: off ({self._current_timeframe})"
+            )
+            return
+        feats = "on"
+        gate = "on" if self._behavioral_vars["enable_behavioral_gate"].get() else "off"
+        or_min = self._behavioral_vars["or_minutes"].get()
+        self.behavioral_status_label.config(
+            text=f"Behavioral: features {feats}, gate {gate} | OR {or_min}m ({self._current_timeframe})"
+        )
+
+    def _hydrate_behavioral_from_inference_params(self, inference_params: dict) -> None:
+        """Sync behavioral UI from a loaded model's saved inference params."""
+        if not inference_params:
+            return
+        subset = {k: inference_params[k] for k in self._behavioral_vars if k in inference_params}
+        if subset:
+            self._apply_preset_to_vars(subset, self._behavioral_vars)
+        self._sync_behavioral_ui_state()
 
     # ------------------------------------------------------------------
     # Default per-strategy parameters surfaced by the StrategySection picker.
@@ -2163,12 +2292,16 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
             cross_asset_info=ca_info,
             training_context=ctx,
         )
+        self._hydrate_behavioral_from_inference_params(
+            self.meta_model_result.get("inference_params", {})
+        )
 
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
     def _collect_training_params(self):
         params = {k: var.get() for k, var in self._training_vars.items()}
+        params.update(self._collect_behavioral_params())
         params["base_strategies"] = self.base_section.serialize()
         return params
 
@@ -2297,6 +2430,7 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
         self.populate_version_selector()
         if model.get("version"):
             self.version_var.set(model["version"])
+        self._hydrate_behavioral_from_inference_params(model.get("inference_params", {}))
 
     def show_training_results(self, metrics, cross_asset_info=None, training_context=None):
         """Render metrics + training-context labels for either a just-trained
@@ -2380,6 +2514,89 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
 
         ttk.Button(dialog, text="Close", command=dialog.destroy).grid(
             row=len(rows), column=0, columnspan=2, pady=10
+        )
+
+    def open_behavioral_param_dialog(self):
+        if not self._behavioral_vars["enable_behavioral"].get():
+            return
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Behavioral Parameters")
+        dialog.grab_set()
+
+        feature_rows = [
+            ("Opening range (minutes)", "or_minutes", "int"),
+            ("OFI bar window", "ofi_bar_window", "int"),
+            ("Chop consensus std threshold", "consensus_std_chop_threshold", "float"),
+            ("Herd consensus std threshold", "consensus_std_herd_threshold", "float"),
+            ("Herd consensus mean threshold", "consensus_mean_herd_threshold", "float"),
+            ("Chop momentum threshold", "chop_momentum_threshold", "float"),
+        ]
+        gate_rows = [
+            ("Opening gate threshold bump", "gate_opening_threshold_bump", "float"),
+            ("Chop gate threshold bump", "gate_chop_threshold_bump", "float"),
+        ]
+
+        row_idx = 0
+        ttk.Label(dialog, text="Feature thresholds", font=("", 9, "bold")).grid(
+            row=row_idx, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 4)
+        )
+        row_idx += 1
+        for label_text, var_key, _kind in feature_rows:
+            ttk.Label(dialog, text=label_text).grid(
+                row=row_idx, column=0, sticky="w", padx=10, pady=3
+            )
+            ttk.Entry(dialog, textvariable=self._behavioral_vars[var_key], width=14).grid(
+                row=row_idx, column=1, sticky="w", padx=10, pady=3
+            )
+            row_idx += 1
+
+        gate_enabled = bool(self._behavioral_vars["enable_behavioral_gate"].get())
+        ttk.Label(dialog, text="Gate thresholds", font=("", 9, "bold")).grid(
+            row=row_idx, column=0, columnspan=2, sticky="w", padx=10, pady=(10, 4)
+        )
+        row_idx += 1
+        gate_widgets = []
+        for label_text, var_key, _kind in gate_rows:
+            lbl = ttk.Label(dialog, text=label_text)
+            lbl.grid(row=row_idx, column=0, sticky="w", padx=10, pady=3)
+            entry = ttk.Entry(dialog, textvariable=self._behavioral_vars[var_key], width=14)
+            entry.grid(row=row_idx, column=1, sticky="w", padx=10, pady=3)
+            gate_widgets.extend((lbl, entry))
+            row_idx += 1
+
+        block_cb = ttk.Checkbutton(
+            dialog,
+            text="Block all trades during opening window",
+            variable=self._behavioral_vars["gate_opening_block"],
+        )
+        block_cb.grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=10, pady=6)
+        gate_widgets.append(block_cb)
+        row_idx += 1
+
+        gate_state = "normal" if gate_enabled else "disabled"
+        for widget in gate_widgets:
+            widget.config(state=gate_state)
+        if not gate_enabled:
+            ttk.Label(
+                dialog,
+                text="Enable Behavioral gate to edit gate thresholds.",
+                foreground="gray",
+            ).grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
+            row_idx += 1
+
+        ttk.Label(
+            dialog,
+            text=f"Presets keyed to timeframe: {self._current_timeframe}",
+        ).grid(row=row_idx, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 4))
+        row_idx += 1
+
+        def _close():
+            self._sync_behavioral_ui_state()
+            dialog.destroy()
+
+        ttk.Button(dialog, text="Close", command=_close).grid(
+            row=row_idx, column=0, columnspan=2, pady=10
         )
 
     # ------------------------------------------------------------------
@@ -2545,7 +2762,24 @@ class StrategyCollapsibleFrame(CollapsibleFrame):
                 # search() already showed its own "No Data" dialog.
                 return _empty_logic()
 
-        params = trained.get("inference_params", trained)
+        params = dict(trained.get("inference_params", trained))
+        params.update(self._collect_behavioral_params())
+
+        feature_cols = trained.get("feature_columns") or []
+        model_needs_behavioral = any(
+            str(c).startswith(
+                ("score_consensus_", "dist_open_atr", "dist_or_", "capitulation_", "flow_price_")
+            )
+            or str(c) in ("or_position", "price_accel_atr", "upper_wick_ratio", "lower_wick_ratio")
+            for c in feature_cols
+        )
+        if model_needs_behavioral and not params.get("enable_behavioral", True):
+            messagebox.showwarning(
+                "Run Strategy",
+                "This model was trained with behavioral features. Re-enable "
+                "'Behavioral features' or load a model trained without them.",
+            )
+            return _empty_logic()
 
         def signal_logic(df: pd.DataFrame) -> pd.DataFrame:
             return strategies.meta_learner_signals(

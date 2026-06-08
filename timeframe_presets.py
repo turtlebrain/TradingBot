@@ -35,6 +35,21 @@ TRAINING_KEYS = (
     "atr_window",
 )
 
+# Behavioral feature / gate keys surfaced in the Strategy behavioral dialog.
+BEHAVIORAL_KEYS = (
+    "enable_behavioral",
+    "enable_behavioral_gate",
+    "or_minutes",
+    "ofi_bar_window",
+    "consensus_std_chop_threshold",
+    "consensus_std_herd_threshold",
+    "consensus_mean_herd_threshold",
+    "chop_momentum_threshold",
+    "gate_opening_threshold_bump",
+    "gate_chop_threshold_bump",
+    "gate_opening_block",
+)
+
 # OneHour — original defaults (unchanged).
 _ONE_HOUR_INDICATORS: Dict[str, dict] = {
     "DMA Crossing": {"short_window": 20, "long_window": 50},
@@ -56,6 +71,20 @@ _ONE_HOUR_TRAINING: Dict[str, Any] = {
     "learning_rate": 0.05,
     "cost_bp": 5.0,
     "atr_window": 14,
+}
+
+_ONE_HOUR_BEHAVIORAL: Dict[str, Any] = {
+    "enable_behavioral": True,
+    "enable_behavioral_gate": False,
+    "or_minutes": 15,
+    "ofi_bar_window": 10,
+    "consensus_std_chop_threshold": 0.35,
+    "consensus_std_herd_threshold": 0.15,
+    "consensus_mean_herd_threshold": 0.25,
+    "chop_momentum_threshold": 0.15,
+    "gate_opening_threshold_bump": 0.05,
+    "gate_chop_threshold_bump": 0.03,
+    "gate_opening_block": False,
 }
 
 TIMEFRAME_PRESETS: Dict[str, Dict[str, Any]] = {
@@ -80,10 +109,24 @@ TIMEFRAME_PRESETS: Dict[str, Dict[str, Any]] = {
             "cost_bp": 10.0,
             "atr_window": 30,
         },
+        "behavioral": {
+            "enable_behavioral": True,
+            "enable_behavioral_gate": False,
+            "or_minutes": 15,
+            "ofi_bar_window": 30,
+            "consensus_std_chop_threshold": 0.30,
+            "consensus_std_herd_threshold": 0.12,
+            "consensus_mean_herd_threshold": 0.20,
+            "chop_momentum_threshold": 0.10,
+            "gate_opening_threshold_bump": 0.06,
+            "gate_chop_threshold_bump": 0.04,
+            "gate_opening_block": False,
+        },
     },
     "OneHour": {
         "indicators": copy.deepcopy(_ONE_HOUR_INDICATORS),
         "training": copy.deepcopy(_ONE_HOUR_TRAINING),
+        "behavioral": copy.deepcopy(_ONE_HOUR_BEHAVIORAL),
     },
     "OneDay": {
         "indicators": {
@@ -106,6 +149,19 @@ TIMEFRAME_PRESETS: Dict[str, Dict[str, Any]] = {
             "cost_bp": 5.0,
             "atr_window": 14,
         },
+        "behavioral": {
+            "enable_behavioral": True,
+            "enable_behavioral_gate": False,
+            "or_minutes": 15,
+            "ofi_bar_window": 5,
+            "consensus_std_chop_threshold": 0.40,
+            "consensus_std_herd_threshold": 0.18,
+            "consensus_mean_herd_threshold": 0.30,
+            "chop_momentum_threshold": 0.25,
+            "gate_opening_threshold_bump": 0.04,
+            "gate_chop_threshold_bump": 0.02,
+            "gate_opening_block": False,
+        },
     },
     "OneWeek": {
         "indicators": {
@@ -127,6 +183,19 @@ TIMEFRAME_PRESETS: Dict[str, Dict[str, Any]] = {
             "learning_rate": 0.05,
             "cost_bp": 8.0,
             "atr_window": 14,
+        },
+        "behavioral": {
+            "enable_behavioral": True,
+            "enable_behavioral_gate": False,
+            "or_minutes": 15,
+            "ofi_bar_window": 3,
+            "consensus_std_chop_threshold": 0.45,
+            "consensus_std_herd_threshold": 0.20,
+            "consensus_mean_herd_threshold": 0.35,
+            "chop_momentum_threshold": 0.35,
+            "gate_opening_threshold_bump": 0.03,
+            "gate_chop_threshold_bump": 0.02,
+            "gate_opening_block": False,
         },
     },
 }
@@ -162,3 +231,12 @@ def get_training_presets(timeframe: str) -> Dict[str, Any]:
     """Meta-learner training-param defaults for ``timeframe``."""
     tf = normalize_timeframe(timeframe)
     return copy.deepcopy(TIMEFRAME_PRESETS[tf]["training"])
+
+
+def get_behavioral_presets(timeframe: str) -> Dict[str, Any]:
+    """Behavioral feature / gate defaults for ``timeframe``."""
+    tf = normalize_timeframe(timeframe)
+    block = TIMEFRAME_PRESETS[tf].get("behavioral")
+    if block is None:
+        return copy.deepcopy(_ONE_HOUR_BEHAVIORAL)
+    return copy.deepcopy(block)
