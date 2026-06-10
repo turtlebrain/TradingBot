@@ -3,7 +3,9 @@ import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+SymbolRef = Union[str, int, Dict[str, Any]]
 
 from Brokers.broker_interface import BrokerInterface
 
@@ -292,16 +294,38 @@ class IBKRBroker(BrokerInterface):
     def refresh_token(self, refresh_token: str) -> Dict[str, Any]:
         return {"status": "session", "detail": "No token refresh required for TWS API."}
 
-    def _contract_from_symbol(self, symbol: Any) -> Contract:
+    def _contract_from_symbol(self, symbol: SymbolRef) -> Contract:
+        """Build an IB Contract. IBKR requires exchange/secType even when conId is set."""
         contract = Contract()
+        if isinstance(symbol, dict):
+            con_id = symbol.get("conId") or symbol.get("symbolId")
+            if con_id:
+                contract.conId = int(con_id)
+            contract.symbol = symbol.get("symbol", "")
+            contract.secType = symbol.get("secType", "STK")
+            contract.exchange = symbol.get("exchange", "SMART")
+            contract.currency = symbol.get("currency", "USD")
+            return contract
+
         if isinstance(symbol, int) or (isinstance(symbol, str) and str(symbol).isdigit()):
             contract.conId = int(symbol)
-        else:
-            contract.symbol = str(symbol)
             contract.secType = "STK"
-            contract.currency = "USD"
             contract.exchange = "SMART"
+            contract.currency = "USD"
+            return contract
+
+        contract.symbol = str(symbol)
+        contract.secType = "STK"
+        contract.currency = "USD"
+        contract.exchange = "SMART"
         return contract
+
+    def _request_errors(self, req_id: int) -> List[Dict[str, Any]]:
+        return [
+            err for err in self.client.errors
+            if err.get("reqId") == req_id
+            and err.get("code") not in (2104, 2106, 2107, 2158)
+        ]
 
     def get_symbols(self, query: str) -> List[Dict[str, Any]]:
         if not self.connected:
@@ -323,7 +347,7 @@ class IBKRBroker(BrokerInterface):
 
     def get_candles(
         self,
-        symbol: str,
+        symbol: SymbolRef,
         start: datetime,
         end: datetime,
         interval: str = "OneDay",
@@ -351,6 +375,10 @@ class IBKRBroker(BrokerInterface):
         )
         if not self._wait(req_id, timeout=30.0):
             raise RuntimeError(f"Timed out fetching candles for {symbol}.")
+
+        req_errors = self._request_errors(req_id)
+        if req_errors and not self.client.historical_data:
+            raise RuntimeError(req_errors[-1]["msg"])
 
         start_ts = datetime.combine(start, datetime.min.time())
         end_ts = datetime.combine(end, datetime.max.time())

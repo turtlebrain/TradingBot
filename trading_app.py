@@ -1017,7 +1017,10 @@ class TradingStrategyFrame(ttk.Frame):
                 print("No data found for:", stock_symbol)
                 return pd.DataFrame()
             first_symbol = symbol_data[0]
-            candle_key = first_symbol.get("symbolId") or first_symbol.get("conId") or stock_symbol
+            if self.controller.is_ibkr():
+                candle_key = first_symbol
+            else:
+                candle_key = first_symbol.get("symbolId") or first_symbol.get("conId") or stock_symbol
             candle_data = self.controller.broker.get_candles(
                 symbol=candle_key,
                 start=start_date_obj,
