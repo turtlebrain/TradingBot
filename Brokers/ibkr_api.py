@@ -41,6 +41,14 @@ def _load_ibkr_env() -> Dict[str, Any]:
     }
 
 
+def _parse_ib_bar_time(raw: str) -> datetime:
+    """Parse IBKR historical bar timestamps (daily or intraday)."""
+    parts = raw.strip().split()
+    if len(parts) == 1:
+        return datetime.strptime(parts[0], "%Y%m%d")
+    return datetime.strptime(f"{parts[0]} {parts[1]}", "%Y%m%d %H:%M:%S")
+
+
 def _map_timeframe(interval: str, start: datetime, end: datetime) -> Tuple[str, str]:
     """Map app timeframe strings to IBKR barSizeSetting and durationStr."""
     days = max((end - start).days, 1)
@@ -384,11 +392,7 @@ class IBKRBroker(BrokerInterface):
         end_ts = datetime.combine(end, datetime.max.time())
         filtered: List[Dict[str, Any]] = []
         for bar in self.client.historical_data:
-            raw = bar["date"]
-            if " " in raw:
-                bar_dt = datetime.strptime(raw.split(" ")[0] + " " + raw.split(" ")[1], "%Y%m%d %H:%M:%S")
-            else:
-                bar_dt = datetime.strptime(raw, "%Y%m%d")
+            bar_dt = _parse_ib_bar_time(bar["date"])
             if start_ts <= bar_dt <= end_ts:
                 filtered.append(bar)
         return filtered
