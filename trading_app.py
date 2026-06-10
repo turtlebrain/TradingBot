@@ -153,9 +153,24 @@ class TradingBotApp:
     def on_close(self):
         self.running = False
         # Gracefully end trade live trading and finalize dataframe, and finally stop stream and persist sessions
-        if self.broker and hasattr(self.broker, "log"):
-            self.broker.log.end_session()
+        if self.broker:
+            if hasattr(self.broker, "disconnect"):
+                try:
+                    self.broker.disconnect()
+                except Exception:
+                    pass
+            if hasattr(self.broker, "log"):
+                self.broker.log.end_session()
         self.root.quit()
+
+    def is_ibkr(self) -> bool:
+        return self.selected_broker_name == "ibkr"
+
+    def is_session_ready(self) -> bool:
+        if self.is_ibkr():
+            return self.broker is not None and getattr(self.broker, "connected", False)
+        auth = self.frames[AuthFrame]
+        return bool(auth.access_token and auth.api_server)
 
 class BrokerSelectionFrame(ttk.Frame):
     def __init__(self, parent, controller):
@@ -244,6 +259,12 @@ class LoginFrame(ttk.Frame):
             broker = self.controller.get_selected_broker()
             auth_info = broker.authenticate()
         except Exception as e:
+            if self.controller.broker and hasattr(self.controller.broker, "disconnect"):
+                try:
+                    self.controller.broker.disconnect()
+                except Exception:
+                    pass
+            self.controller.broker = None
             messagebox.showerror("Login Error", f"Unable to start broker login: {e}")
             return
         auth_url = auth_info.get("auth_url")
@@ -983,10 +1004,11 @@ class TradingStrategyFrame(ttk.Frame):
             messagebox.showwarning("Input Error", "Please enter a valid stock symbol as query.")
             return pd.DataFrame()
 
-        my_access_token = self.controller.frames[AuthFrame].access_token
-        my_api_server = self.controller.frames[AuthFrame].api_server
-        if not my_access_token and not my_api_server:
-            print("No access token found, please log in and authenticate first")
+        if not self.controller.is_session_ready():
+            messagebox.showwarning(
+                "Not connected",
+                "Please log in and connect your broker session first."
+            )
             return pd.DataFrame()
 
         try:
@@ -994,9 +1016,10 @@ class TradingStrategyFrame(ttk.Frame):
             if not symbol_data:
                 print("No data found for:", stock_symbol)
                 return pd.DataFrame()
-            symbol_id = symbol_data[0]['symbolId']
+            first_symbol = symbol_data[0]
+            candle_key = first_symbol.get("symbolId") or first_symbol.get("conId") or stock_symbol
             candle_data = self.controller.broker.get_candles(
-                symbol=symbol_id,
+                symbol=candle_key,
                 start=start_date_obj,
                 end=end_date_obj,
                 interval=chart.time_interval,
@@ -1020,6 +1043,9 @@ class TradingStrategyFrame(ttk.Frame):
             return candle_df
         except requests.exceptions.HTTPError as err:
             messagebox.showerror("Error", f"HTTP error occurered {err}")
+            return pd.DataFrame()
+        except Exception as err:
+            messagebox.showerror("Error", f"Broker error: {err}")
             return pd.DataFrame()
 
     
@@ -1250,6 +1276,14 @@ class CandlestickChartFrame(ttk.Frame):
     
     def toggle_live_mode(self):
         if self.live_switch_var.get():
+            if self.controller.is_ibkr():
+                messagebox.showwarning(
+                    "Live mode unavailable",
+                    "IBKR live streaming is not implemented yet. "
+                    "Use Search to load historical candles."
+                )
+                self.live_switch_var.set(False)
+                return
             # A workspace flagged as cross-asset is treated as a read-only
             # secondary input; live streaming would mutate its candles and
             # contaminate the primary strategy's feature build.
