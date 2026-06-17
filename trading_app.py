@@ -681,6 +681,7 @@ class TabbedWorkspaceFrame(ttk.Frame):
         for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
             if workspace is self.active_workspace:
                 chart.candle_chart.clear()
+                chart.clear_candle_cache()
                 break
             
             
@@ -688,6 +689,7 @@ class TabbedWorkspaceFrame(ttk.Frame):
         """Clear charts in all workspaces."""
         for workspace, tab, chart, general_tab, strategy_tab, execution_tab in self.workspaces:
             chart.candle_chart.clear()
+            chart.clear_candle_cache()
 
     # --- Cross-asset workspace helpers ---
     # A "cross-asset" workspace is a chart tab the user has flagged to be used
@@ -1011,6 +1013,14 @@ class TradingStrategyFrame(ttk.Frame):
             )
             return pd.DataFrame()
 
+        if chart.candle_cache_matches(
+            stock_symbol, start_date_obj, end_date_obj, chart.time_interval
+        ):
+            candle_df = chart.get_cached_candles()
+            if show_output:
+                chart.update_chart(candle_df)
+            return candle_df
+
         try:
             symbol_data = self.controller.broker.get_symbols(query=stock_symbol)
             if not symbol_data:
@@ -1041,6 +1051,9 @@ class TradingStrategyFrame(ttk.Frame):
                 )
                 return candle_df
 
+            chart.store_candles(
+                candle_df, stock_symbol, start_date_obj, end_date_obj, chart.time_interval
+            )
             if show_output:
                 chart.update_chart(candle_df)
             return candle_df
@@ -1276,6 +1289,37 @@ class CandlestickChartFrame(ttk.Frame):
         self._view_start = 0
         self._last_rendered_len = None
         self._chart_title = ""
+        self._candle_cache = None
+
+    def _candle_cache_key(self, symbol, start_date, end_date, timeframe):
+        return {
+            "symbol": symbol.upper().strip(),
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+            "timeframe": timeframe,
+        }
+
+    def candle_cache_matches(self, symbol, start_date, end_date, timeframe) -> bool:
+        if not self._candle_cache or self._full_df.empty:
+            return False
+        return self._candle_cache == self._candle_cache_key(
+            symbol, start_date, end_date, timeframe
+        )
+
+    def get_cached_candles(self) -> pd.DataFrame:
+        return self._full_df.copy()
+
+    def store_candles(self, df, symbol, start_date, end_date, timeframe):
+        self._candle_cache = self._candle_cache_key(
+            symbol, start_date, end_date, timeframe
+        )
+        self._full_df = df.copy()
+
+    def clear_candle_cache(self):
+        self._candle_cache = None
+        self._full_df = pd.DataFrame()
+        self._view_start = 0
+        self._last_rendered_len = None
     
     def toggle_live_mode(self):
         if self.live_switch_var.get():

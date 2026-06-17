@@ -1,7 +1,7 @@
 import os
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -66,6 +66,45 @@ def _map_timeframe(interval: str, start: datetime, end: datetime) -> Tuple[str, 
         bar_size = "1 day"
         duration = f"{max(days, 30)} D" if days < 365 else f"{days // 365 + 1} Y"
     return bar_size, duration
+
+
+def _historical_chunk_days(interval: str) -> int:
+    if interval == "OneMinute":
+        return 30
+    if interval == "OneHour":
+        return 365
+    return 10_000
+
+
+def _historical_wait_timeout(interval: str, chunk_days: int) -> float:
+    if interval == "OneMinute":
+        return min(120.0, 20.0 + chunk_days * 3.0)
+    if interval == "OneHour":
+        return min(90.0, 20.0 + chunk_days * 0.5)
+    return 30.0
+
+
+def _as_date(value) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    return value
+
+
+def _iter_historical_chunks(start, end, interval: str):
+    """Yield (chunk_start, chunk_end) date pairs for IBKR historical paging."""
+    start_d = _as_date(start)
+    end_d = _as_date(end)
+    max_days = _historical_chunk_days(interval)
+    total_days = max((end_d - start_d).days, 1)
+    if total_days <= max_days:
+        yield start_d, end_d
+        return
+
+    cur_end = end_d
+    while cur_end >= start_d:
+        cur_start = max(start_d, cur_end - timedelta(days=max_days - 1))
+        yield cur_start, cur_end
+        cur_end = cur_start - timedelta(days=1)
 
 
 class _IBClient(EWrapper, EClient):
@@ -364,34 +403,48 @@ class IBKRBroker(BrokerInterface):
             raise RuntimeError("IBKR session not connected.")
 
         contract = self._contract_from_symbol(symbol)
-        bar_size, duration_str = _map_timeframe(interval, start, end)
-        end_time = end.strftime("%Y%m%d 23:59:59 US/Eastern")
+        start_d = _as_date(start)
+        end_d = _as_date(end)
+        start_ts = datetime.combine(start_d, datetime.min.time())
+        end_ts = datetime.combine(end_d, datetime.max.time())
 
-        req_id = self._next_req_id()
-        self.client.historical_data = []
-        self.client.reqHistoricalData(
-            req_id,
-            contract,
-            end_time,
-            duration_str,
-            bar_size,
-            "TRADES",
-            1,
-            1,
-            False,
-            [],
-        )
-        if not self._wait(req_id, timeout=30.0):
-            raise RuntimeError(f"Timed out fetching candles for {symbol}.")
+        merged: Dict[str, Dict[str, Any]] = {}
+        chunks = list(_iter_historical_chunks(start_d, end_d, interval))
+        for idx, (chunk_start, chunk_end) in enumerate(chunks):
+            if idx > 0:
+                time.sleep(1.0)
 
-        req_errors = self._request_errors(req_id)
-        if req_errors and not self.client.historical_data:
-            raise RuntimeError(req_errors[-1]["msg"])
+            bar_size, duration_str = _map_timeframe(interval, chunk_start, chunk_end)
+            end_time = chunk_end.strftime("%Y%m%d 23:59:59 US/Eastern")
+            chunk_days = max((chunk_end - chunk_start).days, 1)
+            timeout = _historical_wait_timeout(interval, chunk_days)
 
-        start_ts = datetime.combine(start, datetime.min.time())
-        end_ts = datetime.combine(end, datetime.max.time())
+            req_id = self._next_req_id()
+            self.client.historical_data = []
+            self.client.reqHistoricalData(
+                req_id,
+                contract,
+                end_time,
+                duration_str,
+                bar_size,
+                "TRADES",
+                1,
+                1,
+                False,
+                [],
+            )
+            if not self._wait(req_id, timeout=timeout):
+                raise RuntimeError(f"Timed out fetching candles for {symbol}.")
+
+            req_errors = self._request_errors(req_id)
+            if req_errors and not self.client.historical_data:
+                raise RuntimeError(req_errors[-1]["msg"])
+
+            for bar in self.client.historical_data:
+                merged[bar["date"]] = bar
+
         filtered: List[Dict[str, Any]] = []
-        for bar in self.client.historical_data:
+        for bar in sorted(merged.values(), key=lambda b: _parse_ib_bar_time(b["date"])):
             bar_dt = _parse_ib_bar_time(bar["date"])
             if start_ts <= bar_dt <= end_ts:
                 filtered.append(bar)
