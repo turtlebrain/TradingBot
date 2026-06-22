@@ -84,7 +84,119 @@ def init_db():
         )
         """)
 
+        # Historical bars (local cache of broker candle data)
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS historical_bars (
+            bar_id     INTEGER PRIMARY KEY AUTOINCREMENT,
+            broker     TEXT NOT NULL,
+            symbol     TEXT NOT NULL,
+            timeframe  TEXT NOT NULL,
+            ts         TEXT NOT NULL,   -- UTC 'YYYY-MM-DD HH:MM:SS' (fixed-width, lexically sortable)
+            open       REAL,
+            high       REAL,
+            low        REAL,
+            close      REAL,
+            volume     REAL,
+            UNIQUE(broker, symbol, timeframe, ts)
+        )
+        """)
+
+        # Bar coverage (which date ranges we have already fully fetched, so a
+        # cache hit means "complete", not just "some rows exist").
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS bar_coverage (
+            coverage_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            broker      TEXT NOT NULL,
+            symbol      TEXT NOT NULL,
+            timeframe   TEXT NOT NULL,
+            range_start TEXT NOT NULL,  -- 'YYYY-MM-DD'
+            range_end   TEXT NOT NULL   -- 'YYYY-MM-DD'
+        )
+        """)
+
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hist_bars "
+            "ON historical_bars(broker, symbol, timeframe, ts)"
+        )
+
         conn.commit()
+
+# --- Historical bar cache i/o ---
+def _norm_symbol(symbol):
+    return str(symbol).upper().strip()
+
+def has_bar_coverage(broker, symbol, timeframe, range_start, range_end):
+    """True if a single prior fetch already covered the whole requested range."""
+    with get_connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT 1 FROM bar_coverage
+               WHERE broker=? AND symbol=? AND timeframe=?
+                 AND range_start<=? AND range_end>=?
+               LIMIT 1""",
+            (broker, _norm_symbol(symbol), timeframe,
+             range_start.isoformat(), range_end.isoformat())
+        )
+        return cur.fetchone() is not None
+
+def load_historical_bars(broker, symbol, timeframe, range_start, range_end):
+    """Return cached bars for the range as a UTC-indexed OHLCV DataFrame."""
+    start_str = range_start.strftime("%Y-%m-%d 00:00:00")
+    end_str = range_end.strftime("%Y-%m-%d 23:59:59")
+    with get_connection() as conn:
+        df = pd.read_sql(
+            """SELECT ts, open, high, low, close, volume FROM historical_bars
+               WHERE broker=? AND symbol=? AND timeframe=?
+                 AND ts>=? AND ts<=?
+               ORDER BY ts""",
+            conn,
+            params=(broker, _norm_symbol(symbol), timeframe, start_str, end_str),
+        )
+    if df.empty:
+        return df
+    df["timestamp"] = pd.to_datetime(df["ts"], utc=True)
+    df = df.drop(columns=["ts"]).set_index("timestamp")
+    return df
+
+def save_historical_bars(broker, symbol, timeframe, df, range_start, range_end):
+    """Persist fetched bars and record the covered range. Best-effort; never raises."""
+    if df is None or df.empty:
+        return
+    try:
+        bars = df.reset_index()
+        ts_col = "timestamp" if "timestamp" in bars.columns else bars.columns[0]
+        ts_series = pd.to_datetime(bars[ts_col], utc=True).dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        rows = []
+        sym = _norm_symbol(symbol)
+        for i in range(len(bars)):
+            rows.append((
+                broker, sym, timeframe, ts_series.iloc[i],
+                float(bars["open"].iloc[i]) if "open" in bars else None,
+                float(bars["high"].iloc[i]) if "high" in bars else None,
+                float(bars["low"].iloc[i]) if "low" in bars else None,
+                float(bars["close"].iloc[i]) if "close" in bars else None,
+                float(bars["volume"].iloc[i]) if "volume" in bars else None,
+            ))
+
+        with get_connection() as conn:
+            cur = conn.cursor()
+            cur.executemany(
+                """INSERT OR IGNORE INTO historical_bars
+                   (broker, symbol, timeframe, ts, open, high, low, close, volume)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                rows
+            )
+            cur.execute(
+                """INSERT INTO bar_coverage
+                   (broker, symbol, timeframe, range_start, range_end)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (broker, sym, timeframe,
+                 range_start.isoformat(), range_end.isoformat())
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[persistence] save_historical_bars skipped: {e}")
 
 # --- Account file i/o ---
 def insert_account(name, cash):

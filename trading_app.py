@@ -30,6 +30,18 @@ import ML_Classifier.ml_trading_persistence as ml_persist
 from ML_Classifier.stacked_meta_learner import train_stacked_meta_learner
 
 
+def _as_date_only(value):
+    """Coerce a date/datetime to a pure ``datetime.date``.
+
+    ``DateEntry.get_date()`` may hand back a ``datetime.datetime`` whose
+    ``isoformat()`` carries a ``T00:00:00`` suffix that ``date.fromisoformat``
+    cannot parse; normalizing here keeps cache keys and DB params consistent.
+    """
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    return value
+
+
 class TradingBotApp:
     def __init__(self, root):
         self.root = root
@@ -1006,6 +1018,11 @@ class TradingStrategyFrame(ttk.Frame):
             messagebox.showwarning("Input Error", "Please enter a valid stock symbol as query.")
             return pd.DataFrame()
 
+        # DateEntry.get_date() can return a datetime; normalize to a pure date
+        # so cache keys and disk-cache params are consistent and parseable.
+        start_date_obj = _as_date_only(start_date_obj)
+        end_date_obj = _as_date_only(end_date_obj)
+
         if not self.controller.is_session_ready():
             messagebox.showwarning(
                 "Not connected",
@@ -1020,6 +1037,38 @@ class TradingStrategyFrame(ttk.Frame):
             if show_output:
                 chart.update_chart(candle_df)
             return candle_df
+
+        # In-memory sub-range: serve a slice of an already-loaded wider range
+        # without any broker call.
+        subrange = chart.get_cached_subrange(
+            stock_symbol, start_date_obj, end_date_obj, chart.time_interval
+        )
+        if subrange is not None and not subrange.empty:
+            if show_output:
+                chart.update_chart(subrange)
+            return subrange
+
+        # Cross-session disk cache: reuse bars previously saved to SQLite.
+        broker_name = self.controller.selected_broker_name
+        try:
+            if persist.has_bar_coverage(
+                broker_name, stock_symbol, chart.time_interval,
+                start_date_obj, end_date_obj
+            ):
+                candle_df = persist.load_historical_bars(
+                    broker_name, stock_symbol, chart.time_interval,
+                    start_date_obj, end_date_obj
+                )
+                if not candle_df.empty:
+                    chart.store_candles(
+                        candle_df, stock_symbol, start_date_obj,
+                        end_date_obj, chart.time_interval
+                    )
+                    if show_output:
+                        chart.update_chart(candle_df)
+                    return candle_df
+        except Exception as db_err:
+            print(f"[search] disk cache read skipped: {db_err}")
 
         try:
             symbol_data = self.controller.broker.get_symbols(query=stock_symbol)
@@ -1051,6 +1100,10 @@ class TradingStrategyFrame(ttk.Frame):
                 )
                 return candle_df
 
+            persist.save_historical_bars(
+                broker_name, stock_symbol, chart.time_interval,
+                candle_df, start_date_obj, end_date_obj
+            )
             chart.store_candles(
                 candle_df, stock_symbol, start_date_obj, end_date_obj, chart.time_interval
             )
@@ -1294,8 +1347,8 @@ class CandlestickChartFrame(ttk.Frame):
     def _candle_cache_key(self, symbol, start_date, end_date, timeframe):
         return {
             "symbol": symbol.upper().strip(),
-            "start": start_date.isoformat(),
-            "end": end_date.isoformat(),
+            "start": _as_date_only(start_date).isoformat(),
+            "end": _as_date_only(end_date).isoformat(),
             "timeframe": timeframe,
         }
 
@@ -1305,6 +1358,26 @@ class CandlestickChartFrame(ttk.Frame):
         return self._candle_cache == self._candle_cache_key(
             symbol, start_date, end_date, timeframe
         )
+
+    def get_cached_subrange(self, symbol, start_date, end_date, timeframe):
+        """Return a slice of the cached frame when the requested range is fully
+        contained in what we already fetched (same symbol + timeframe).
+        Returns None when there is no safe slice to serve."""
+        if not self._candle_cache or self._full_df.empty:
+            return None
+        if self._candle_cache["symbol"] != symbol.upper().strip():
+            return None
+        if self._candle_cache["timeframe"] != timeframe:
+            return None
+        start_date = _as_date_only(start_date)
+        end_date = _as_date_only(end_date)
+        cached_start = datetime.date.fromisoformat(self._candle_cache["start"])
+        cached_end = datetime.date.fromisoformat(self._candle_cache["end"])
+        if start_date < cached_start or end_date > cached_end:
+            return None
+        idx_dates = self._full_df.index.date
+        mask = (idx_dates >= start_date) & (idx_dates <= end_date)
+        return self._full_df.loc[mask].copy()
 
     def get_cached_candles(self) -> pd.DataFrame:
         return self._full_df.copy()

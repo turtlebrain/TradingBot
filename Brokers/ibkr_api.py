@@ -235,6 +235,9 @@ class IBKRBroker(BrokerInterface):
         self.connected = False
         self._thread: Optional[threading.Thread] = None
         self._req_id = 1000
+        # conId/contract lookups are stable for a session; cache by symbol
+        # to avoid a reqContractDetails round-trip on every candle fetch.
+        self._contract_cache: Dict[str, List[Dict[str, Any]]] = {}
 
     def _next_req_id(self) -> int:
         self._req_id += 1
@@ -334,6 +337,7 @@ class IBKRBroker(BrokerInterface):
         if self.client.isConnected():
             self.client.disconnect()
         self.connected = False
+        self._contract_cache.clear()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=2.0)
         self._thread = None
@@ -378,6 +382,11 @@ class IBKRBroker(BrokerInterface):
         if not self.connected:
             raise RuntimeError("IBKR session not connected.")
 
+        cache_key = query.upper().strip()
+        cached = self._contract_cache.get(cache_key)
+        if cached:
+            return cached
+
         base = Contract()
         base.symbol = query
         base.secType = "STK"
@@ -390,7 +399,10 @@ class IBKRBroker(BrokerInterface):
         if not self._wait(req_id, timeout=10.0):
             raise RuntimeError(f"Timed out searching symbols for '{query}'.")
 
-        return self.client.symbol_search_results
+        results = self.client.symbol_search_results
+        if results:
+            self._contract_cache[cache_key] = results
+        return results
 
     def get_candles(
         self,
